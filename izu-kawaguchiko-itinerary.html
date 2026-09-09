@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>伊豆半島 × 河口湖｜4天3夜行程</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@500;700&family=Noto+Sans+TC:wght@400;500;700&display=swap" rel="stylesheet">
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          paper: '#EFEADB',
+          ink: '#2A2723',
+          indigo: '#2C3B4C',
+          maple: '#B3452F',
+          moss: '#5B6F55',
+          line: '#D9D2BC'
+        },
+        fontFamily: {
+          serif: ['"Shippori Mincho"', 'serif'],
+          sans: ['"Noto Sans TC"', 'sans-serif']
+        }
+      }
+    }
+  }
+</script>
+<style>
+  body { background-color: #EFEADB; }
+  .acc-body a {color: #2A2723; text-decoration: underline; }
+
+  .tag-transport { background: #E4E0D2; color: #6B655A; }
+  .tag-visit     { background: rgba(91,111,85,0.14); color: #4A5B45; }
+  .tag-enter     { background: rgba(179,69,47,0.13); color: #B3452F; }
+  .tag-stay      { background: rgba(44,59,76,0.12); color: #2C3B4C; }
+
+  .tab-btn { position: relative; }
+  .tab-btn.active { color: #2A2723; }
+  .tab-btn.active::after {
+    content: '';
+    position: absolute;
+    left: 0; right: 0; bottom: -1px;
+    height: 2px;
+    background: #B3452F;
+  }
+  .tab-btn:not(.active) { color: #9C9686; }
+
+  .tl-dot {
+    width: 10px; height: 10px; border-radius: 999px;
+    background: #EFEADB; border: 2px solid #2C3B4C;
+    flex-shrink: 0; cursor: pointer;
+    transition: background .15s, border-color .15s, transform .15s;
+  }
+  .tl-item.active .tl-dot {
+    background: #B3452F; border-color: #B3452F;
+    transform: scale(1.15);
+  }
+  .tl-line { width: 2px; background: #D9D2BC; flex: 1; min-height: 14px; }
+  .tl-row { cursor: pointer; }
+  .tl-row .tl-name { transition: color .15s; }
+  .tl-item.active .tl-name { color: #B3452F; }
+
+  .acc-card { border: 1px solid #D9D2BC; background: #F7F4EA; }
+  .acc-card.active { border-color: #B3452F; }
+  .acc-head { cursor: pointer; }
+  .acc-chevron { transition: transform .2s ease; }
+  .acc-card.open .acc-chevron { transform: rotate(180deg); }
+  .acc-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .25s ease; }
+  .acc-card.open .acc-body { grid-template-rows: 1fr; }
+  .acc-body-inner { overflow: hidden; }
+
+  .img-thumb { object-fit: cover; cursor: zoom-in; transition: opacity .15s; }
+  .img-thumb:hover { opacity: .85; }
+
+  #lightbox { background: rgba(0,0,0,0.88); }
+  #lightbox.hidden { display: none; }
+  .lightbox-nav { user-select: none; }
+
+  ::-webkit-scrollbar { height: 6px; }
+</style>
+</head>
+<body class="font-sans text-ink">
+
+<!-- 行程資料獨立於 itinerary-data.json，之後只要改該檔即可 -->
+
+<div class="max-w-2xl mx-auto px-5 pt-8 pb-16">
+
+  <!-- 標題區 -->
+  <header class="mb-8">
+    <div class="flex items-end justify-between gap-4">
+      <div>
+        <p class="text-xs tracking-wide text-moss mb-1">2026年10月・秋</p>
+        <h1 class="font-serif text-2xl sm:text-3xl font-bold text-ink leading-snug">伊豆半島 <span class="text-maple">×</span> 河口湖</h1>
+        <p class="text-sm text-ink/60 mt-1">4天3夜・10/8（四）— 10/11（日）</p>
+      </div>
+      <svg width="72" height="44" viewBox="0 0 72 44" class="text-indigo/70 shrink-0">
+        <path d="M2 34 Q10 24 18 34 T34 34" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+        <path d="M20 34 L34 12 L42 22 L52 6 L70 34 Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>
+        <circle cx="52" cy="6" r="2" fill="#B3452F" stroke="none"/>
+      </svg>
+    </div>
+    <div class="h-px bg-line mt-5"></div>
+  </header>
+
+  <!-- Day 頁籤 -->
+  <nav id="tabs" class="flex gap-6 border-b border-line mb-6 overflow-x-auto"></nav>
+
+  <!-- 時間軸 -->
+  <section class="mb-8">
+    <h2 class="font-serif text-sm text-ink/50 mb-3">今日時間軸</h2>
+    <div id="timeline" class="flex flex-col"></div>
+  </section>
+
+  <!-- 今日資訊卡：餐食 + 住宿 -->
+  <section id="today-info" class="mb-8 rounded-lg bg-[#F7F4EA] border border-line p-4"></section>
+
+  <!-- 景點細節（Accordion） -->
+  <section>
+    <h2 class="font-serif text-sm text-ink/50 mb-3">景點行程細節</h2>
+    <div id="details" class="flex flex-col gap-2"></div>
+  </section>
+
+</div>
+
+<!-- Lightbox -->
+<div id="lightbox" class="hidden fixed inset-0 z-50 items-center justify-center p-4">
+  <button id="lightbox-close" class="lightbox-nav absolute top-4 right-4 text-white/80 hover:text-white text-3xl leading-none">&times;</button>
+  <button id="lightbox-prev" class="lightbox-nav absolute left-2 sm:left-6 top-1/2 -translate-y-1/2 text-white/70 hover:text-white text-4xl px-2">&#8249;</button>
+  <button id="lightbox-next" class="lightbox-nav absolute right-2 sm:right-6 top-1/2 -translate-y-1/2 text-white/70 hover:text-white text-4xl px-2">&#8250;</button>
+  <div class="max-w-3xl w-full flex flex-col items-center gap-3">
+    <img id="lightbox-img" src="" alt="" class="max-h-[75vh] w-auto rounded-md object-contain">
+    <p id="lightbox-caption" class="text-white/80 text-sm text-center px-4"></p>
+  </div>
+</div>
+
+<script>
+  let data = [];
+  let currentDay = 0;
+  let activeStopIndex = null;
+  let openStops = new Set();
+
+  const tagClass = {
+    '交通': 'tag-transport',
+    '下車參觀': 'tag-visit',
+    '入內參觀': 'tag-enter',
+    '住宿': 'tag-stay'
+  };
+
+  function renderTabs() {
+    const tabs = document.getElementById('tabs');
+    tabs.innerHTML = data.map((d, i) => `
+      <button data-idx="${i}" class="tab-btn ${i === currentDay ? 'active' : ''} shrink-0 pb-3 text-sm font-medium whitespace-nowrap">
+        Day${d.id}<span class="ml-1 text-xs text-ink/40">${d.dateLabel}（${d.weekday}）</span>
+      </button>
+    `).join('');
+    tabs.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => switchDay(parseInt(btn.dataset.idx)));
+    });
+  }
+
+  function renderTimeline() {
+    const day = data[currentDay];
+    const el = document.getElementById('timeline');
+    el.innerHTML = day.stops.map((s, i) => `
+      <div class="tl-item ${activeStopIndex === i ? 'active' : ''}" data-idx="${i}">
+        <div class="flex gap-3">
+          <div class="flex flex-col items-center">
+            <div class="tl-dot" data-idx="${i}"></div>
+            ${i < day.stops.length - 1 ? '<div class="tl-line"></div>' : ''}
+          </div>
+          <div class="tl-row pb-4 -mt-0.5" data-idx="${i}">
+            <div class="flex items-baseline gap-2">
+              <span class="text-xs text-ink/45 font-medium tabular-nums">${s.time}</span>
+              <span class="tl-name text-sm font-medium">${s.name}</span>
+            </div>
+            <p class="text-xs text-ink/50 mt-0.5">${s.summary}</p>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    el.querySelectorAll('[data-idx]').forEach(node => {
+      node.addEventListener('click', () => focusFromTimeline(parseInt(node.dataset.idx)));
+    });
+  }
+
+  function renderTodayInfo() {
+    const day = data[currentDay];
+    const el = document.getElementById('today-info');
+    el.innerHTML = `
+      <p class="font-serif text-sm text-indigo mb-3">${day.route}</p>
+      <div class="grid grid-cols-3 gap-3 text-xs mb-4">
+        <div><p class="text-ink/40 mb-1">早餐</p><p class="text-ink/80">${day.meals.breakfast}</p></div>
+        <div><p class="text-ink/40 mb-1">午餐</p><p class="text-ink/80">${day.meals.lunch}</p></div>
+        <div><p class="text-ink/40 mb-1">晚餐</p><p class="text-ink/80">${day.meals.dinner}</p></div>
+      </div>
+      <div class="h-px bg-line mb-3"></div>
+      <div class="flex items-start gap-2">
+        <span class="text-indigo mt-0.5">🏨</span>
+        <div class="text-sm">
+          <p class="font-medium">${day.hotel.name}</p>
+          <p class="text-xs text-ink/55">${day.hotel.address}</p>
+          ${day.hotel.note ? `<p class="text-xs text-ink/45 mt-0.5">${day.hotel.note}</p>` : ''}
+          ${day.hotel.url ? `<a href="${day.hotel.url}" target="_blank" class="text-xs text-maple underline underline-offset-2">查看訂房資訊</a>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderDetails() {
+    const day = data[currentDay];
+    const el = document.getElementById('details');
+    el.innerHTML = day.stops.map((s, i) => `
+      <div class="acc-card ${activeStopIndex === i ? 'active' : ''} ${openStops.has(i) ? 'open' : ''} rounded-lg" data-idx="${i}" id="acc-${i}">
+        <div class="acc-head flex items-center justify-between gap-3 px-4 py-3" data-idx="${i}">
+          <div class="flex items-center gap-3 min-w-0">
+            <span class="text-xs text-ink/40 tabular-nums shrink-0">${s.time}</span>
+            <span class="text-sm font-medium truncate">${s.name}</span>
+            <span class="text-[11px] px-2 py-0.5 rounded-full shrink-0 ${tagClass[s.tag]}">${s.tag}</span>
+          </div>
+          <svg class="acc-chevron shrink-0 text-ink/40" width="14" height="14" viewBox="0 0 14 14"><path d="M2 5 L7 10 L12 5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <div class="acc-body">
+          <div class="acc-body-inner px-4 pb-4">
+            <p class="text-sm text-ink/70 leading-relaxed">${s.detail}</p>
+            ${s.images && s.images.length ? `
+              <div class="flex gap-2 flex-wrap mt-3">
+                ${s.images.map((img, imgI) => `
+                  <img src="${img.url}" alt="${(img.caption || '').replace(/"/g, '&quot;')}" loading="lazy"
+                       data-stop="${i}" data-img="${imgI}"
+                       class="img-thumb w-20 h-20 rounded-md border border-line" />
+                `).join('')}
+              </div>
+            ` : ''}
+          </div>
+        </div>
+      </div>
+    `).join('');
+    el.querySelectorAll('.acc-head').forEach(head => {
+      head.addEventListener('click', () => {
+        toggleAccordion(parseInt(head.dataset.idx));
+      });
+    });
+    el.querySelectorAll('.img-thumb').forEach(thumb => {
+      thumb.addEventListener('click', () => {
+        const stopIdx = parseInt(thumb.dataset.stop);
+        const imgIdx = parseInt(thumb.dataset.img);
+        openLightbox(day.stops[stopIdx].images, imgIdx);
+      });
+    });
+  }
+
+  let lightboxImages = [];
+  let lightboxIndex = 0;
+
+  function renderLightbox() {
+    const img = lightboxImages[lightboxIndex];
+    document.getElementById('lightbox-img').src = img.url;
+    document.getElementById('lightbox-img').alt = img.caption || '';
+    document.getElementById('lightbox-caption').textContent = img.caption || '';
+    const multi = lightboxImages.length > 1;
+    document.getElementById('lightbox-prev').style.display = multi ? '' : 'none';
+    document.getElementById('lightbox-next').style.display = multi ? '' : 'none';
+  }
+
+  function openLightbox(images, index) {
+    lightboxImages = images;
+    lightboxIndex = index;
+    renderLightbox();
+    const box = document.getElementById('lightbox');
+    box.classList.remove('hidden');
+    box.classList.add('flex');
+  }
+
+  function closeLightbox() {
+    const box = document.getElementById('lightbox');
+    box.classList.add('hidden');
+    box.classList.remove('flex');
+  }
+
+  function stepLightbox(delta) {
+    lightboxIndex = (lightboxIndex + delta + lightboxImages.length) % lightboxImages.length;
+    renderLightbox();
+  }
+
+  document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+  document.getElementById('lightbox-prev').addEventListener('click', () => stepLightbox(-1));
+  document.getElementById('lightbox-next').addEventListener('click', () => stepLightbox(1));
+  document.getElementById('lightbox').addEventListener('click', (e) => {
+    if (e.target.id === 'lightbox') closeLightbox();
+  });
+  document.addEventListener('keydown', (e) => {
+    if (document.getElementById('lightbox').classList.contains('hidden')) return;
+    if (e.key === 'Escape') closeLightbox();
+    if (e.key === 'ArrowLeft') stepLightbox(-1);
+    if (e.key === 'ArrowRight') stepLightbox(1);
+  });
+
+  function toggleAccordion(idx) {
+    if (openStops.has(idx)) {
+      openStops.delete(idx);
+    } else {
+      openStops.add(idx);
+    }
+    activeStopIndex = idx;
+    renderTimeline();
+    renderDetails();
+  }
+
+  function focusFromTimeline(idx) {
+    activeStopIndex = idx;
+    openStops.add(idx);
+    renderTimeline();
+    renderDetails();
+    document.getElementById(`acc-${idx}`).scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
+  function switchDay(idx) {
+    currentDay = idx;
+    activeStopIndex = null;
+    openStops = new Set(data[idx].stops.map((_, i) => i));
+    renderTabs();
+    renderTimeline();
+    renderTodayInfo();
+    renderDetails();
+  }
+
+  fetch('itinerary-data.json')
+    .then(res => res.json())
+    .then(json => {
+      data = json;
+      switchDay(0);
+    })
+    .catch(err => {
+      document.getElementById('tabs').outerHTML =
+        '<p class="text-sm text-maple">行程資料載入失敗，請確認是用本地伺服器（如 VS Code Live Server）開啟本頁，而不是直接雙擊 HTML 檔案。</p>';
+      console.error(err);
+    });
+</script>
+
+</body>
+</html>
