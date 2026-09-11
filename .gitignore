@@ -1,0 +1,2 @@
+# Supabase CLI 本機暫存/快取，含連線資訊，不應進版控
+supabase/.temp/
