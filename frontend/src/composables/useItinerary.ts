@@ -82,7 +82,7 @@ async function loadItinerary(): Promise<void> {
       .select('id, date_label, weekday, route, meals, hotel, sort_order')
       .eq('trip_id', trip.id)
       .order('sort_order', { ascending: true })
-      .returns<DayRow[]>()
+      .overrideTypes<DayRow[], { merge: false }>()
 
     if (dayErr) throw new Error(dayErr.message)
     const dayList = dayRows ?? []
@@ -99,7 +99,7 @@ async function loadItinerary(): Promise<void> {
       .in('day_id', dayIds)
       .eq('status', 'active') // 只顯示未被軟刪除的（Phase 1 資料都是 active）
       .order('sort_order', { ascending: true })
-      .returns<StopRow[]>()
+      .overrideTypes<StopRow[], { merge: false }>()
 
     if (stopErr) throw new Error(stopErr.message)
     const stopList = stopRows ?? []
@@ -113,7 +113,7 @@ async function loadItinerary(): Promise<void> {
         .select('id, stop_id, url, caption, sort_order')
         .in('stop_id', stopIds)
         .order('sort_order', { ascending: true })
-        .returns<ImageRow[]>()
+        .overrideTypes<ImageRow[], { merge: false }>()
 
       if (imageErr) throw new Error(imageErr.message)
       imageList = imageRows ?? []
