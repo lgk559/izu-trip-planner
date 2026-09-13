@@ -43,6 +43,7 @@ interface ImageRow {
   url: string
   caption: string
   sort_order: number
+  storage_path: string | null
 }
 
 // 目前站上只有一趟旅遊（ADR 007），載入時取最早建立的那筆。
@@ -130,7 +131,7 @@ async function loadItinerary(): Promise<void> {
     if (stopIds.length > 0) {
       const { data: imageRows, error: imageErr } = await supabase
         .from('images')
-        .select('id, stop_id, url, caption, sort_order')
+        .select('id, stop_id, url, caption, sort_order, storage_path')
         .in('stop_id', stopIds)
         .order('sort_order', { ascending: true })
         .overrideTypes<ImageRow[], { merge: false }>()
@@ -139,11 +140,44 @@ async function loadItinerary(): Promise<void> {
       imageList = imageRows ?? []
     }
 
+    // 4b. 有 storage_path 的是 Phase 3 新上傳圖片（私有 bucket），用批次簽章
+    // 一次換算 signed URL（效期 1 小時），把結果覆蓋進該列的 url。
+    // storage_path 為 null 的舊種子圖片維持原本 url（外部公開連結，不需簽章）。
+    // 簽章失敗不讓整頁載入掛掉：記錄警告、該圖 url 留原值，其餘資料照常組裝。
+    const pathsToSign = imageList
+      .map((img) => img.storage_path)
+      .filter((path): path is string => path !== null && path !== '')
+
+    if (pathsToSign.length > 0) {
+      const { data: signed, error: signErr } = await supabase.storage
+        .from('trip-images')
+        .createSignedUrls(pathsToSign, 3600)
+
+      if (signErr) {
+        console.warn('圖片簽章網址產生失敗，將以原始資料顯示：', signErr.message)
+      } else if (signed) {
+        const urlByPath = new Map<string, string>()
+        for (const item of signed) {
+          if (item.error) {
+            console.warn(`圖片簽章失敗（${item.path}）：`, item.error)
+            continue
+          }
+          if (item.path && item.signedUrl) urlByPath.set(item.path, item.signedUrl)
+        }
+        for (const img of imageList) {
+          if (img.storage_path) {
+            const url = urlByPath.get(img.storage_path)
+            if (url) img.url = url
+          }
+        }
+      }
+    }
+
     // 5. 組裝成巢狀結構：image 掛到 stop、stop 掛到 day
     const imagesByStop = new Map<string, ItineraryImage[]>()
     for (const img of imageList) {
       const arr = imagesByStop.get(img.stop_id) ?? []
-      arr.push({ url: img.url, caption: img.caption })
+      arr.push({ id: img.id, url: img.url, caption: img.caption })
       imagesByStop.set(img.stop_id, arr)
     }
 

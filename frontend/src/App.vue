@@ -411,6 +411,7 @@ onMounted(() => {
         @save-stop="onSaveStop"
         @trash-stop="onTrashStop"
         @move-stop="onMoveStop"
+        @images-changed="reload()"
       />
 
       <!-- 新增景點按鈕（只有 isEditor 才顯示） -->

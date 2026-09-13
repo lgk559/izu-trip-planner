@@ -300,6 +300,120 @@ async function purgeStop(stopId: string): Promise<EditorResult> {
   }
 }
 
+// ---------- 圖片（image）上傳／編輯／刪除 ----------
+
+const IMAGE_BUCKET = 'trip-images'
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024 // 5MB
+
+// 從檔名安全取副檔名（小寫）。取不到就回空字串（路徑不帶副檔名，仍可正常上傳）。
+function fileExtension(fileName: string): string {
+  const dot = fileName.lastIndexOf('.')
+  if (dot < 0 || dot === fileName.length - 1) return ''
+  return fileName.slice(dot + 1).toLowerCase()
+}
+
+// 查某景點現有圖片的最大 sort_order（images 表無軟刪除，撈所有列即可）。
+async function getMaxImageSortOrder(stopId: string): Promise<number> {
+  const { data: maxRow, error } = await supabase
+    .from('images')
+    .select('sort_order')
+    .eq('stop_id', stopId)
+    .order('sort_order', { ascending: false })
+    .limit(1)
+    .maybeSingle<{ sort_order: number }>()
+  if (error) throw new Error(error.message)
+  return maxRow?.sort_order ?? -1
+}
+
+// 上傳一張圖片到某景點：
+//   1. 前端擋 >5MB（不呼叫任何 API，直接回失敗訊息）
+//   2. 上傳到 trip-images bucket，物件路徑 `${stopId}/${uuid}.${ext}`
+//      （以 stopId 開頭分層，方便日後依景點瀏覽 Storage）
+//   3. sort_order 取該景點現有圖片最大值 +1
+//   4. insert 一列 images：storage_path 填路徑、url 留空字串、caption 用呼叫端傳入的值
+//      （url 空字串是 Phase 3 新圖的常態，顯示網址由 useItinerary 載入時簽章換算；
+//      caption 選填參數讓 UI 能在確認上傳的同一步把使用者已填的說明文字一併存入，
+//      不用「先 insert 空白 caption、上傳完再 update」多一次往返）
+async function uploadImage(stopId: string, file: File, caption = ''): Promise<EditorResult> {
+  try {
+    if (file.size > MAX_IMAGE_BYTES) {
+      return { ok: false, message: '圖片超過 5MB，請壓縮或換一張較小的圖片。' }
+    }
+
+    const ext = fileExtension(file.name)
+    const objectName = ext ? `${crypto.randomUUID()}.${ext}` : crypto.randomUUID()
+    const storagePath = `${stopId}/${objectName}`
+
+    const { error: uploadErr } = await supabase.storage
+      .from(IMAGE_BUCKET)
+      .upload(storagePath, file, {
+        contentType: file.type || undefined,
+        upsert: false,
+      })
+    if (uploadErr) throw new Error(uploadErr.message)
+
+    const nextSortOrder = (await getMaxImageSortOrder(stopId)) + 1
+
+    const { error: insertErr } = await supabase.from('images').insert({
+      stop_id: stopId,
+      url: '',
+      caption,
+      sort_order: nextSortOrder,
+      storage_path: storagePath,
+    })
+    if (insertErr) throw new Error(insertErr.message)
+
+    return { ok: true }
+  } catch (err) {
+    return fail(err)
+  }
+}
+
+// 編輯圖片說明文字（images.caption）。
+async function updateImageCaption(imageId: string, caption: string): Promise<EditorResult> {
+  try {
+    const { error } = await supabase.from('images').update({ caption }).eq('id', imageId)
+    if (error) throw new Error(error.message)
+    return { ok: true }
+  } catch (err) {
+    return fail(err)
+  }
+}
+
+// 刪除圖片：先刪 Storage 物件、成功後才刪資料庫記錄。
+//   理由：反過來（先刪 DB）若中途失敗會留下「DB 沒記錄、Storage 卻仍占空間」的孤兒物件，
+//   不易被發現；先刪 Storage 若中途失敗，畫面上該圖會變死連結、使用者容易察覺重試。
+// storage_path 為 null（舊種子圖片，圖存在外部網站不在 Storage）時跳過 Storage 刪除步驟。
+// deleteImage 只收 imageId：內部先查這一列拿 storage_path，不要求上層型別帶著它，
+//   維持顯示元件只知道「最終顯示網址」這個抽象，不外洩 Storage 路徑等後端細節。
+async function deleteImage(imageId: string): Promise<EditorResult> {
+  try {
+    const { data: row, error: findErr } = await supabase
+      .from('images')
+      .select('storage_path')
+      .eq('id', imageId)
+      .maybeSingle<{ storage_path: string | null }>()
+    if (findErr) throw new Error(findErr.message)
+
+    // 找不到該列（可能已被別人刪掉）：視為已達成刪除目的，回成功讓 UI 重載即可。
+    if (!row) return { ok: true }
+
+    if (row.storage_path) {
+      const { error: removeErr } = await supabase.storage
+        .from(IMAGE_BUCKET)
+        .remove([row.storage_path])
+      if (removeErr) throw new Error(removeErr.message)
+    }
+
+    const { error: delErr } = await supabase.from('images').delete().eq('id', imageId)
+    if (delErr) throw new Error(delErr.message)
+
+    return { ok: true }
+  } catch (err) {
+    return fail(err)
+  }
+}
+
 // ---------- 排序（交換相鄰兩筆的 sort_order）----------
 
 // 交換兩個景點的 sort_order。規格明確：不需要包成 RPC，
@@ -408,5 +522,8 @@ export function useEditor() {
     purgeStop,
     swapStopOrder,
     loadTrashedStops,
+    uploadImage,
+    updateImageCaption,
+    deleteImage,
   }
 }

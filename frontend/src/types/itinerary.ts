@@ -5,7 +5,8 @@
 // 供編輯/刪除/排序功能定位到正確的資料庫列、並用真實 sort_order 計算新增與交換。
 
 export interface ItineraryImage {
-  url: string
+  id: string // 資料庫 uuid（編輯 caption／刪除定位用）
+  url: string // 最終顯示網址：新上傳圖片為 signed URL，舊種子圖片為原始外部網址
   caption: string
 }
 

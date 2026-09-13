@@ -23,6 +23,8 @@ const emit = defineEmits<{
   ): void
   (e: 'trash-stop', stopId: string): void
   (e: 'move-stop', payload: { index: number; direction: -1 | 1 }): void
+  // StopEditForm 圖片操作成功後往上轉發，最終由 App.vue reload。
+  (e: 'images-changed'): void
 }>()
 
 // tag 對應的 CSS class（沿用原 HTML 的樣式命名）
@@ -94,7 +96,7 @@ function handleSaved(stopId: string, data: Parameters<typeof onSave>[1]) {
             <div v-if="stop.images.length" class="flex gap-2 flex-wrap mt-3">
               <img
                 v-for="(img, imgI) in stop.images"
-                :key="imgI"
+                :key="img.id"
                 :src="img.url"
                 :alt="img.caption"
                 loading="lazy"
@@ -146,6 +148,7 @@ function handleSaved(stopId: string, data: Parameters<typeof onSave>[1]) {
               :saving="savingStopId === stop.id"
               @save="(data) => handleSaved(stop.id, data)"
               @cancel="editingStopId = null"
+              @images-changed="emit('images-changed')"
             />
           </div>
         </div>

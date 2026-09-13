@@ -2,7 +2,7 @@
 
 原本是純靜態網頁（`izu-kawaguchiko-itinerary.html` + `itinerary-data.json`，手動改 JSON + git commit 更新），正在改造成 4 位朋友共用一組密碼即可線上編輯行程的工具：Vue 3 + Vite + TypeScript 前端、Supabase（Postgres + RLS + Auth + Edge Functions）後端、GitHub Actions 自動部署到 GitHub Pages。
 
-**目前進度**：Phase 0（Spike 驗證）、Phase 1（正式 schema + 密碼閘 + 唯讀行程展示 + 部署 + 保活）、Phase 2（天數/景點 CRUD + 排序 + 回收站，含 Phase 2b 天數管理重新設計）已完成並通過 build。**`supabase/migrations/0004_phase2b_day_management.sql` 尚待手動貼 Dashboard 執行**，執行前天數管理與行程頭部編輯功能會被 RLS 拒絕。Phase 3-5（圖片上傳、備案切換、Google Maps/路程估算）尚未開工。詳細時程與踩過的坑見 vault changelog（見下方文件地圖）。
+**目前進度**：Phase 0（Spike 驗證）、Phase 1（正式 schema + 密碼閘 + 唯讀行程展示 + 部署 + 保活）、Phase 2（天數/景點 CRUD + 排序 + 回收站，含 Phase 2b 天數管理重新設計）、Phase 3（圖片上傳）已完成並通過 build。**`supabase/migrations/0004_phase2b_day_management.sql`、`0005_phase3_images.sql` 尚待手動貼 Dashboard 執行**，執行前天數管理、行程頭部編輯、圖片上傳/編輯/刪除功能會被 RLS 拒絕。Phase 4-5（備案切換、Google Maps/路程估算）尚未開工。詳細時程與踩過的坑見 vault changelog（見下方文件地圖）。
 
 ## 文件地圖
 
