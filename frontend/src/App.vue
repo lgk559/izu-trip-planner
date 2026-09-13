@@ -25,6 +25,10 @@ const {
   restoreStop,
   purgeStop,
   swapStopOrder,
+  createAlternative,
+  linkExistingAsAlternative,
+  switchPrimary,
+  detachAlternative,
   loadTrashedStops,
 } = useEditor()
 
@@ -53,6 +57,9 @@ const tripSummary = computed(() => {
 const savingStopId = ref<string | null>(null)
 const savingDayInfo = ref(false)
 const editorError = ref<string | null>(null)
+// Phase 4：成功操作的附帶提示（例如「已還原為獨立景點」），與 error 分開，
+// 用不同視覺樣式（提示色，非錯誤紅）呈現。
+const editorNote = ref<string | null>(null)
 
 // ---- 行程頭部資訊編輯 ----
 const editingTripInfo = ref(false)
@@ -154,9 +161,11 @@ async function reload(keepDayIndex = currentDay.value) {
 function reportIfFail(result: { ok: boolean; message?: string }): boolean {
   if (!result.ok) {
     editorError.value = result.message ?? '操作失敗，請再試一次。'
+    editorNote.value = null // 失敗時清掉舊的成功提示，避免提示與錯誤同時顯示
     return false
   }
   editorError.value = null
+  editorNote.value = null // 每次新操作成功先清掉舊提示；帶 note 的呼叫端會在之後再設值
   return true
 }
 
@@ -199,6 +208,8 @@ async function onAddStop() {
 async function onTrashStop(stopId: string) {
   const result = await trashStop(stopId)
   if (reportIfFail(result)) {
+    // 成功但帶附帶說明（Phase 4：刪除有現役備選的正式景點時，備選一併進回收站）→ 提示
+    editorNote.value = result.note ?? null
     await reload()
     if (isEditor.value && tripId.value) await refreshTrash()
   }
@@ -219,6 +230,38 @@ async function onMoveStop(payload: { index: number; direction: -1 | 1 }) {
   if (reportIfFail(result)) await reload()
 }
 
+// ---- 備案（Phase 4）----
+async function onCreateAlternative(payload: {
+  primaryStopId: string
+  primaryGroupId: string | null
+  sortOrder: number
+  data: { time: string; name: string; tag: string; summary: string; detail: string }
+}) {
+  const day = currentDayData.value
+  if (!day) return
+  const result = await createAlternative({ dayId: day.id, ...payload })
+  if (reportIfFail(result)) await reload()
+}
+
+async function onLinkAlternative(payload: {
+  primaryStopId: string
+  primaryGroupId: string | null
+  otherStopId: string
+}) {
+  const result = await linkExistingAsAlternative(payload)
+  if (reportIfFail(result)) await reload()
+}
+
+async function onSwitchPrimary(payload: { groupId: string; newPrimaryStopId: string }) {
+  const result = await switchPrimary(payload.groupId, payload.newPrimaryStopId)
+  if (reportIfFail(result)) await reload()
+}
+
+async function onDetachAlternative(payload: { stopId: string; dayId: string }) {
+  const result = await detachAlternative(payload.stopId, payload.dayId)
+  if (reportIfFail(result)) await reload()
+}
+
 // ---- 回收站 ----
 async function refreshTrash() {
   if (!tripId.value) return
@@ -235,6 +278,8 @@ async function onRestore(payload: { stopId: string; targetDayId: string }) {
   const result = await restoreStop(payload.stopId, payload.targetDayId)
   trashBusyStopId.value = null
   if (reportIfFail(result)) {
+    // 成功但帶附帶說明（Phase 4：群組已滿→降級為獨立景點）→ 用 editorNote 提示
+    editorNote.value = result.note ?? null
     await reload()
     await refreshTrash()
   }
@@ -385,6 +430,8 @@ onMounted(() => {
 
     <!-- 編輯操作錯誤提示（放在條件外，天數歸零時仍看得到錯誤） -->
     <p v-if="editorError" class="mb-3 text-sm text-maple">{{ editorError }}</p>
+    <!-- Phase 4 成功附帶提示（提示色，非錯誤）：例如備案還原為獨立景點 -->
+    <p v-if="editorNote" class="mb-3 text-sm text-moss">{{ editorNote }}</p>
 
     <!-- 有天數時顯示行程內容 -->
     <template v-if="!isLoading && !loadError && currentDayData">
@@ -402,6 +449,8 @@ onMounted(() => {
       />
       <StopDetails
         :stops="currentDayData.stops"
+        :day-id="currentDayData.id"
+        :trip-id="tripId!"
         :active-stop-index="activeStopIndex"
         :open-stops="openStops"
         :is-editor="isEditor"
@@ -412,6 +461,10 @@ onMounted(() => {
         @trash-stop="onTrashStop"
         @move-stop="onMoveStop"
         @images-changed="reload()"
+        @switch-primary="onSwitchPrimary"
+        @create-alternative="onCreateAlternative"
+        @link-alternative="onLinkAlternative"
+        @detach-alternative="onDetachAlternative"
       />
 
       <!-- 新增景點按鈕（只有 isEditor 才顯示） -->

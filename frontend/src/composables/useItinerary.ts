@@ -35,6 +35,8 @@ interface StopRow {
   summary: string
   detail: string
   sort_order: number
+  alternative_group_id: string | null // Phase 4：同組共用群組 id
+  is_primary: boolean // Phase 4：true=正式，false=備選
 }
 
 interface ImageRow {
@@ -116,9 +118,11 @@ async function loadItinerary(): Promise<void> {
     const dayIds = dayList.map((d) => d.id)
     const { data: stopRows, error: stopErr } = await supabase
       .from('stops')
-      .select('id, day_id, time, name, tag, summary, detail, sort_order')
+      .select(
+        'id, day_id, time, name, tag, summary, detail, sort_order, alternative_group_id, is_primary',
+      )
       .in('day_id', dayIds)
-      .eq('status', 'active') // 只顯示未被軟刪除的
+      .eq('status', 'active') // 只顯示未被軟刪除的（含正式與備選，後續組裝時再分流）
       .order('sort_order', { ascending: true })
       .overrideTypes<StopRow[], { merge: false }>()
 
@@ -181,19 +185,41 @@ async function loadItinerary(): Promise<void> {
       imagesByStop.set(img.stop_id, arr)
     }
 
+    // 把單筆 StopRow 轉成 ItineraryStop。備選景點也走完全一樣的圖片組裝
+    // （imagesByStop 用 stop id 查，正式/備選皆可查到）；alternative 由呼叫端填。
+    const toStop = (stop: StopRow, alternative: ItineraryStop | null): ItineraryStop => ({
+      id: stop.id, // 保留 uuid 供 CRUD 定位
+      sortOrder: stop.sort_order,
+      time: stop.time,
+      name: stop.name,
+      tag: stop.tag,
+      summary: stop.summary,
+      detail: stop.detail,
+      images: imagesByStop.get(stop.id) ?? [],
+      alternativeGroupId: stop.alternative_group_id,
+      alternative,
+    })
+
+    // 先把備選（is_primary=false 且有群組 id）建成「群組 id → 備選 StopRow」lookup。
+    // 固定 1 正式 + 1 備選（uniq index 保證組內至多一筆 primary），所以一組至多一筆備選。
+    const altByGroup = new Map<string, StopRow>()
+    for (const stop of stopList) {
+      if (!stop.is_primary && stop.alternative_group_id) {
+        altByGroup.set(stop.alternative_group_id, stop)
+      }
+    }
+
+    // 只有正式景點（is_primary=true）進主列表；有群組且能找到對應備選才掛 alternative
+    // （找不到=沒有現役備選，是正常狀態不是錯誤，掛 null）。
     const stopsByDay = new Map<string, ItineraryStop[]>()
     for (const stop of stopList) {
+      if (!stop.is_primary) continue // 備選不進主列表，只透過正式景點的 alternative 呈現
       const arr = stopsByDay.get(stop.day_id) ?? []
-      arr.push({
-        id: stop.id, // 保留 uuid 供 CRUD 定位
-        sortOrder: stop.sort_order,
-        time: stop.time,
-        name: stop.name,
-        tag: stop.tag,
-        summary: stop.summary,
-        detail: stop.detail,
-        images: imagesByStop.get(stop.id) ?? [],
-      })
+      const altRow = stop.alternative_group_id
+        ? altByGroup.get(stop.alternative_group_id)
+        : undefined
+      const alternative = altRow ? toStop(altRow, null) : null
+      arr.push(toStop(stop, alternative))
       stopsByDay.set(stop.day_id, arr)
     }
 

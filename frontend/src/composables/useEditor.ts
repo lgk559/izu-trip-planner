@@ -4,7 +4,10 @@ import type { ItineraryHotel, ItineraryMeals } from '@/types/itinerary'
 // 所有寫入操作的統一回傳型別：UI 端據此決定是否顯示錯誤。
 export interface EditorResult {
   ok: boolean
-  message?: string
+  message?: string // 失敗原因，既有用途不變
+  // Phase 4：操作成功但有值得告知使用者的附帶說明（例如「已還原為獨立景點」），
+  // 跟 message 分開避免跟既有的錯誤顯示邏輯混在一起。
+  note?: string
 }
 
 function fail(err: unknown): EditorResult {
@@ -253,14 +256,47 @@ async function addStop(dayId: string): Promise<EditorResult> {
 
 // 軟刪除景點：status→trashed、記錄 trashed_at。
 // 刻意不動其他景點的 sort_order，復原時才能自然回到原本相對位置。
+//
+// Phase 4 邊界處理：若這筆是某備案群組「目前的正式景點」、且群組裡還有現役備選，
+// 直接只刪這一筆會讓備選變成孤兒——它 is_primary=false（不進主列表）又
+// status='active'（不進回收站，回收站只抓 trashed），會同時被主列表與回收站的
+// 篩選條件排除，形同從畫面上完全消失（資料還在，只是哪裡都撈不到）。
+// 修法（使用者確認的預期行為）：刪除正式景點時，若偵測到現役備選，兩筆一起進
+// 回收站——備選沒做錯事，但使用者的意圖既然是「這個時段的安排我都不要了」，
+// 兩筆一起清掉才符合直覺；不對稱地只留備選單獨動 is_primary 反而更難懂。
+// 不動 is_primary/alternative_group_id：跟既有單筆軟刪除一致，兩筆都保留原值，
+// 復原邏輯（見 restoreStop）靠「群組現役成員數」判斷該復原成正式還是備選。
 async function trashStop(stopId: string): Promise<EditorResult> {
   try {
+    const { data: self, error: selfErr } = await supabase
+      .from('stops')
+      .select('alternative_group_id, is_primary')
+      .eq('id', stopId)
+      .maybeSingle<{ alternative_group_id: string | null; is_primary: boolean }>()
+    if (selfErr) throw new Error(selfErr.message)
+
+    const idsToTrash = [stopId]
+    if (self?.is_primary && self.alternative_group_id) {
+      const { data: alt, error: altErr } = await supabase
+        .from('stops')
+        .select('id')
+        .eq('alternative_group_id', self.alternative_group_id)
+        .eq('status', 'active')
+        .eq('is_primary', false)
+        .maybeSingle<{ id: string }>()
+      if (altErr) throw new Error(altErr.message)
+      if (alt) idsToTrash.push(alt.id)
+    }
+
     const { error } = await supabase
       .from('stops')
       .update({ status: 'trashed', trashed_at: new Date().toISOString() })
-      .eq('id', stopId)
+      .in('id', idsToTrash)
     if (error) throw new Error(error.message)
-    return { ok: true }
+
+    return idsToTrash.length > 1
+      ? { ok: true, note: '這個景點的備案也一併移到回收站了。' }
+      : { ok: true }
   } catch (err) {
     return fail(err)
   }
@@ -270,19 +306,78 @@ async function trashStop(stopId: string): Promise<EditorResult> {
 // 目標天由呼叫端（UI）決定——被特別天接住的景點原天已刪除，必須讓使用者選一個
 // 現存的天放回去；即使沒被特別天接住，也允許復原到別天。
 // sort_order 在函式內部查目標天真實最大值 + 1（含 trashed，避免撞號）。
+//
+// Phase 4 邊界處理：這筆若屬於某備案群組，復原前先查該群組目前 active 的成員數，
+// 依成員數決定復原後的角色（不能只看「滿不滿」，因為 trashStop 現在會把整組一起
+// 丟進回收站，可能出現「兩筆都在回收站、現役成員數是 0」的情況）：
+//   - 0 個現役成員：這筆是目前唯一要復原的，沒有其他人能當正式景點，復原成正式
+//   - 1 個現役成員：那筆一定是正式（群組的現役子集永遠「沒有正式」或「剛好一個正式」，
+//     這是所有寫入路徑共同維持的不變量），這筆復原成備選
+//   - 2 個現役成員（已滿）：復原會超過「1 正式 + 1 備選」上限，降級為獨立正式景點，
+//     脫離群組，並回傳 note 讓呼叫端提示使用者
 async function restoreStop(stopId: string, targetDayId: string): Promise<EditorResult> {
   try {
-    const nextSortOrder = (await getMaxStopSortOrder(targetDayId)) + 1
-    const { error } = await supabase
+    // 先查這筆的群組 id（同一次 select 帶出，省一次往返）
+    const { data: self, error: selfErr } = await supabase
       .from('stops')
-      .update({
-        day_id: targetDayId,
-        sort_order: nextSortOrder,
-        status: 'active',
-        trashed_at: null,
-      })
+      .select('alternative_group_id')
       .eq('id', stopId)
+      .maybeSingle<{ alternative_group_id: string | null }>()
+    if (selfErr) throw new Error(selfErr.message)
+
+    // 查該群組目前現役（active）成員數（只有屬於群組時才需要查）
+    let activeCount = 0
+    const groupId = self?.alternative_group_id ?? null
+    if (groupId) {
+      const { count, error: countErr } = await supabase
+        .from('stops')
+        .select('id', { count: 'exact', head: true }) // head：只要 count 不抓資料
+        .eq('alternative_group_id', groupId)
+        .eq('status', 'active')
+      if (countErr) throw new Error(countErr.message)
+      activeCount = count ?? 0
+    }
+
+    const nextSortOrder = (await getMaxStopSortOrder(targetDayId)) + 1
+
+    const payload: {
+      day_id: string
+      sort_order: number
+      status: 'active'
+      trashed_at: null
+      alternative_group_id?: null
+      is_primary?: boolean
+    } = {
+      day_id: targetDayId,
+      sort_order: nextSortOrder,
+      status: 'active',
+      trashed_at: null,
+    }
+
+    const groupFull = activeCount >= 2
+    if (groupFull) {
+      // 群組已滿：降級為獨立正式景點，脫離群組。
+      payload.alternative_group_id = null
+      payload.is_primary = true
+    } else if (groupId && activeCount === 1) {
+      // 群組未滿、且已有一個現役成員（必為正式）：這筆明確復原成備選。必要性：
+      // trashStop 保留 is_primary 原值，這筆 trashed 前的 is_primary 不可預期，
+      // 若殘留為 true，復原後會與現役正式景點同組雙 primary，撞 uniq_alt_group_primary。
+      payload.is_primary = false
+    } else if (groupId && activeCount === 0) {
+      // 屬於群組但目前沒有任何現役成員（例如 trashStop 把整組一起丟進回收站後，
+      // 只先復原這一筆）：沒有別人能當正式，這筆自己復原成正式，避免「不是正式
+      // 又不是回收站」的孤兒狀態。
+      payload.is_primary = true
+    }
+    // 不屬於任何群組（groupId 為 null）：維持原邏輯不動這兩欄，自然以獨立景點復原。
+
+    const { error } = await supabase.from('stops').update(payload).eq('id', stopId)
     if (error) throw new Error(error.message)
+
+    if (groupFull) {
+      return { ok: true, note: '原本的備案已被取代，這筆已還原為獨立景點。' }
+    }
     return { ok: true }
   } catch (err) {
     return fail(err)
@@ -442,6 +537,214 @@ async function swapStopOrder(
   }
 }
 
+// ---------- 備案（alternative）機制（Phase 4）----------
+
+// 決定一個備案群組 id：正式景點若尚未有群組（primaryGroupId=null），產生新 uuid 並
+// 寫回正式景點那筆（is_primary 維持 true 不變）；已有就直接沿用。
+// 兩種新增備選方式（新建 / 連結既有）共用這一步，抽成 helper 避免重複。
+async function ensureGroupId(
+  primaryStopId: string,
+  primaryGroupId: string | null,
+): Promise<string> {
+  if (primaryGroupId) return primaryGroupId
+  const groupId = crypto.randomUUID()
+  const { error } = await supabase
+    .from('stops')
+    .update({ alternative_group_id: groupId }) // is_primary 不動，維持 true
+    .eq('id', primaryStopId)
+  if (error) throw new Error(error.message)
+  return groupId
+}
+
+// 檢查某群組目前是否「已經有一個現役備選」（status='active' 且 is_primary=false）。
+// createAlternative / linkExistingAsAlternative 寫入前都要查——前端 UI 只在畫面資料
+// 顯示「沒有備選」時才給入口，但這是多人協作工具：兩人同時對同一正式景點各加一個
+// 備案，前端各自看到的都是「還沒有備選」，會產生同組 2 個非 primary 成員。
+// uniq_alt_group_primary 只保證「最多一個 primary」，擋不住「多個非 primary」，
+// 所以必須在後端寫入前再擋一次。groupId 為 null（正式景點還沒有群組）時必為空，直接回 false。
+async function groupHasAlternative(groupId: string | null): Promise<boolean> {
+  if (!groupId) return false
+  const { count, error } = await supabase
+    .from('stops')
+    .select('id', { count: 'exact', head: true })
+    .eq('alternative_group_id', groupId)
+    .eq('status', 'active')
+    .eq('is_primary', false)
+  if (error) throw new Error(error.message)
+  return (count ?? 0) >= 1
+}
+
+// 新建一個全新的備選景點，掛到正式景點所在群組。
+// sort_order 直接沿用正式景點自己的 sort_order（呼叫端傳入），不查 max+1：
+//   備選不進主列表排序計算，用相同值即可，且這樣不會拉高 getMaxStopSortOrder
+//   對「該天下一個正式景點該用的 sort_order」的計算結果。
+async function createAlternative(payload: {
+  dayId: string
+  primaryStopId: string
+  primaryGroupId: string | null
+  sortOrder: number
+  data: { time: string; name: string; tag: string; summary: string; detail: string }
+}): Promise<EditorResult> {
+  try {
+    // 後端滿員檢查（防競態）：已有現役備選就拒絕，不寫入。
+    if (await groupHasAlternative(payload.primaryGroupId)) {
+      return { ok: false, message: '這個景點已經有備案了，請先移除現有備案再新增。' }
+    }
+
+    const groupId = await ensureGroupId(payload.primaryStopId, payload.primaryGroupId)
+    const { error } = await supabase.from('stops').insert({
+      day_id: payload.dayId,
+      time: payload.data.time,
+      name: payload.data.name,
+      tag: payload.data.tag,
+      summary: payload.data.summary,
+      detail: payload.data.detail,
+      sort_order: payload.sortOrder,
+      status: 'active',
+      alternative_group_id: groupId,
+      is_primary: false,
+    })
+    if (error) throw new Error(error.message)
+    return { ok: true }
+  } catch (err) {
+    return fail(err)
+  }
+}
+
+// 把同一天內另一個既有景點事後連結成備選。候選也包含回收站裡的景點（見
+// loadAlternativeCandidates），若選到的是已刪除的，這裡順便把它復原（status/trashed_at
+// 一併重設），等於「連結」跟「從回收站復原」一次做完，不用先復原再回來連結。
+// 不動它的 sort_order（維持原值）：它現在不進主列表顯示，數值不影響任何排序計算；
+//   且日後若被拆出群組、恢復成獨立正式景點，保留原值比塞新值更合理。
+async function linkExistingAsAlternative(payload: {
+  primaryStopId: string
+  primaryGroupId: string | null
+  otherStopId: string
+}): Promise<EditorResult> {
+  try {
+    // 後端滿員檢查（防競態）：已有現役備選就拒絕，不寫入。
+    if (await groupHasAlternative(payload.primaryGroupId)) {
+      return { ok: false, message: '這個景點已經有備案了，請先移除現有備案再新增。' }
+    }
+
+    const groupId = await ensureGroupId(payload.primaryStopId, payload.primaryGroupId)
+    const { error } = await supabase
+      .from('stops')
+      .update({
+        alternative_group_id: groupId,
+        is_primary: false,
+        status: 'active', // 候選可能來自回收站，連結時一併復原
+        trashed_at: null,
+      })
+      .eq('id', payload.otherStopId)
+    if (error) throw new Error(error.message)
+    return { ok: true }
+  } catch (err) {
+    return fail(err)
+  }
+}
+
+// 解除備選的備案關聯，退回成當天一個獨立的正式景點：清空 alternative_group_id、
+// is_primary 設回 true、sort_order 取該天現有最大值 +1（放到當天最後一個，比照
+// addStop 的既有慣例，位置可預測、不會跟其他景點撞號）。只適用於備選——正式景點
+// 本來就顯示在主列表，不需要這個操作；要移除備選改用既有的「刪除」（trashStop）。
+async function detachAlternative(stopId: string, dayId: string): Promise<EditorResult> {
+  try {
+    const nextSortOrder = (await getMaxStopSortOrder(dayId)) + 1
+    const { error } = await supabase
+      .from('stops')
+      .update({ alternative_group_id: null, is_primary: true, sort_order: nextSortOrder })
+      .eq('id', stopId)
+    if (error) throw new Error(error.message)
+    return { ok: true }
+  } catch (err) {
+    return fail(err)
+  }
+}
+
+// 切換群組內的正式景點：走 switch_primary_stop RPC（兩段式 UPDATE，避開 partial
+// unique index 逐列檢查陷阱，見 0006 migration 檔案開頭說明）。
+async function switchPrimary(
+  groupId: string,
+  newPrimaryStopId: string,
+): Promise<EditorResult> {
+  try {
+    const { error } = await supabase.rpc('switch_primary_stop', {
+      p_group_id: groupId,
+      p_new_primary_id: newPrimaryStopId,
+    })
+    if (error) throw new Error(error.message)
+    return { ok: true }
+  } catch (err) {
+    return fail(err)
+  }
+}
+
+// 「連結既有景點」下拉選單的候選來源，分兩段撈再合併：
+//   1. active 候選：限「同一天」——同天以外的行程被誤跨接成備選會很怪，維持既有限制
+//   2. trashed 候選：不限天數，整趟旅遊都找（比照 loadTrashedStops 撈全部 day id，
+//      含特別天——因整天被刪除而搬進特別天的回收站景點也能被連結）。回收站的景點
+//      本來就不在任何一天的主列表上顯示，跨天選取不會有「同時屬於兩天」的問題
+// 兩段都排除已屬於任何群組的（`alternative_group_id IS NULL`）與正式景點自己。
+// 回傳格式比照 loadTrashedStops（{ ok, message?, data }）。
+async function loadAlternativeCandidates(
+  dayId: string,
+  excludeStopId: string,
+  tripId: string,
+): Promise<{
+  ok: boolean
+  message?: string
+  data: { id: string; name: string; time: string; status: 'active' | 'trashed' }[]
+}> {
+  try {
+    const { data: activeRows, error: activeErr } = await supabase
+      .from('stops')
+      .select('id, name, time, status')
+      .eq('day_id', dayId)
+      .eq('status', 'active')
+      .is('alternative_group_id', null)
+      .neq('id', excludeStopId)
+      .order('sort_order', { ascending: true })
+      .overrideTypes<
+        { id: string; name: string; time: string; status: 'active' | 'trashed' }[],
+        { merge: false }
+      >()
+    if (activeErr) throw new Error(activeErr.message)
+
+    const { data: dayRows, error: dayErr } = await supabase
+      .from('days')
+      .select('id')
+      .eq('trip_id', tripId)
+    if (dayErr) throw new Error(dayErr.message)
+    const tripDayIds = (dayRows ?? []).map((d) => d.id as string)
+
+    let trashedRows: { id: string; name: string; time: string; status: 'active' | 'trashed' }[] =
+      []
+    if (tripDayIds.length > 0) {
+      // 不過濾 alternative_group_id：軟刪除不動這個欄位，回收站景點可能還留著舊群組的
+      // 關聯，但它早就不是任何群組的現役成員了，舊關聯不該擋住它被連結成新的備案——
+      // 連結時 linkExistingAsAlternative 會直接覆寫成新的群組 id，不會殘留舊關係。
+      const { data, error: trashedErr } = await supabase
+        .from('stops')
+        .select('id, name, time, status')
+        .in('day_id', tripDayIds)
+        .eq('status', 'trashed')
+        .neq('id', excludeStopId)
+        .order('trashed_at', { ascending: false })
+        .overrideTypes<
+          { id: string; name: string; time: string; status: 'active' | 'trashed' }[],
+          { merge: false }
+        >()
+      if (trashedErr) throw new Error(trashedErr.message)
+      trashedRows = data ?? []
+    }
+
+    return { ok: true, data: [...(activeRows ?? []), ...trashedRows] }
+  } catch (err) {
+    return { ...fail(err), data: [] }
+  }
+}
+
 // ---------- 回收站列表查詢 ----------
 
 // 回收站的一筆景點：帶所屬天的顯示資訊，方便 UI 標示「這是哪一天的景點」。
@@ -521,6 +824,11 @@ export function useEditor() {
     restoreStop,
     purgeStop,
     swapStopOrder,
+    createAlternative,
+    linkExistingAsAlternative,
+    switchPrimary,
+    detachAlternative,
+    loadAlternativeCandidates,
     loadTrashedStops,
     uploadImage,
     updateImageCaption,

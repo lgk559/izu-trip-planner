@@ -2,9 +2,12 @@
 import { ref } from 'vue'
 import type { ItineraryImage, ItineraryStop } from '@/types/itinerary'
 import StopEditForm from '@/components/StopEditForm.vue'
+import AlternativePanel from '@/components/AlternativePanel.vue'
 
 const props = defineProps<{
   stops: ItineraryStop[]
+  dayId: string
+  tripId: string
   activeStopIndex: number | null
   openStops: Set<number>
   isEditor: boolean
@@ -25,6 +28,22 @@ const emit = defineEmits<{
   (e: 'move-stop', payload: { index: number; direction: -1 | 1 }): void
   // StopEditForm 圖片操作成功後往上轉發，最終由 App.vue reload。
   (e: 'images-changed'): void
+  // Phase 4 備案事件：直接往上轉發到 App（payload 由 AlternativePanel 組好）
+  (e: 'switch-primary', payload: { groupId: string; newPrimaryStopId: string }): void
+  (
+    e: 'create-alternative',
+    payload: {
+      primaryStopId: string
+      primaryGroupId: string | null
+      sortOrder: number
+      data: { time: string; name: string; tag: string; summary: string; detail: string }
+    },
+  ): void
+  (
+    e: 'link-alternative',
+    payload: { primaryStopId: string; primaryGroupId: string | null; otherStopId: string },
+  ): void
+  (e: 'detach-alternative', payload: { stopId: string; dayId: string }): void
 }>()
 
 // tag 對應的 CSS class（沿用原 HTML 的樣式命名）
@@ -148,6 +167,23 @@ function handleSaved(stopId: string, data: Parameters<typeof onSave>[1]) {
               :saving="savingStopId === stop.id"
               @save="(data) => handleSaved(stop.id, data)"
               @cancel="editingStopId = null"
+              @images-changed="emit('images-changed')"
+            />
+
+            <!-- Phase 4 備案區塊：正式景點卡片內的備選管理（新增/編輯/刪除/切換為正式） -->
+            <AlternativePanel
+              :primary-stop="stop"
+              :day-id="dayId"
+              :trip-id="tripId"
+              :is-editor="isEditor"
+              :saving-stop-id="savingStopId"
+              @open-lightbox="emit('open-lightbox', $event)"
+              @save-stop="emit('save-stop', $event)"
+              @trash-stop="emit('trash-stop', $event)"
+              @switch-primary="emit('switch-primary', $event)"
+              @create-alternative="emit('create-alternative', $event)"
+              @link-alternative="emit('link-alternative', $event)"
+              @detach-alternative="emit('detach-alternative', $event)"
               @images-changed="emit('images-changed')"
             />
           </div>

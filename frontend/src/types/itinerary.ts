@@ -19,6 +19,11 @@ export interface ItineraryStop {
   summary: string
   detail: string // 內含 HTML，前端以 v-html 渲染（ADR 003 前提：編輯者為信任圈）
   images: ItineraryImage[]
+  // Phase 4 備案機制：同組共用的群組 id，null 代表這個景點目前沒有備案關聯。
+  alternativeGroupId: string | null
+  // Phase 4 備案方案（固定 1 正式 + 1 備選）：只有主列表裡的正式景點會有值；
+  // 巢狀在 alternative 裡的備選本身這欄必為 null（型別允許遞迴，但實務不疊多層）。
+  alternative: ItineraryStop | null
 }
 
 export interface ItineraryMeals {

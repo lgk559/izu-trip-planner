@@ -2,7 +2,7 @@
 
 原本是純靜態網頁（`izu-kawaguchiko-itinerary.html` + `itinerary-data.json`，手動改 JSON + git commit 更新），正在改造成 4 位朋友共用一組密碼即可線上編輯行程的工具：Vue 3 + Vite + TypeScript 前端、Supabase（Postgres + RLS + Auth + Edge Functions）後端、GitHub Actions 自動部署到 GitHub Pages。
 
-**目前進度**：Phase 0（Spike 驗證）、Phase 1（正式 schema + 密碼閘 + 唯讀行程展示 + 部署 + 保活）、Phase 2（天數/景點 CRUD + 排序 + 回收站，含 Phase 2b 天數管理重新設計）、Phase 3（圖片上傳）已完成並通過 build。**`supabase/migrations/0004_phase2b_day_management.sql`、`0005_phase3_images.sql` 尚待手動貼 Dashboard 執行**，執行前天數管理、行程頭部編輯、圖片上傳/編輯/刪除功能會被 RLS 拒絕。Phase 4-5（備案切換、Google Maps/路程估算）尚未開工。詳細時程與踩過的坑見 vault changelog（見下方文件地圖）。
+**目前進度**：Phase 0（Spike 驗證）、Phase 1（正式 schema + 密碼閘 + 唯讀行程展示 + 部署 + 保活）、Phase 2（天數/景點 CRUD + 排序 + 回收站，含 Phase 2b 天數管理重新設計）、Phase 3（圖片上傳）、Phase 4（備案切換機制）已完成並通過 build。**`supabase/migrations/0004_phase2b_day_management.sql`、`0005_phase3_images.sql`、`0006_phase4_alternatives.sql` 尚待手動貼 Dashboard 執行**，執行前天數管理、行程頭部編輯、圖片上傳/編輯/刪除、備案切換功能會被 RLS 拒絕。Phase 5（Google Maps/路程估算）尚未開工。詳細時程與踩過的坑見 vault changelog（見下方文件地圖）。
 
 ## 文件地圖
 
@@ -37,7 +37,7 @@ Supabase：
 ## 架構速覽
 
 ```
-frontend/                 Vue3+Vite+TS SPA，目前只有唯讀行程展示+密碼閘（Phase 2+ 會加編輯功能）
+frontend/                 Vue3+Vite+TS SPA，密碼閘+行程展示+完整編輯（天數/景點 CRUD、排序、回收站、圖片、備案切換）
 supabase/migrations/       SQL schema，手動貼 Dashboard SQL Editor 執行
 supabase/functions/        Deno Edge Functions（verify-password：密碼驗證+登記編輯權限）
 .github/workflows/         deploy.yml：push main 自動 build+部署到 GitHub Pages
@@ -54,7 +54,8 @@ izu-kawaguchiko-itinerary.html / itinerary-data.json
 - **`CREATE POLICY` 不支援 `IF NOT EXISTS`**：可重入的 migration 要用 `drop policy if exists "..." on ...;` 接著 `create policy "..." on ...;`，不要寫 `create policy if not exists`（會是無效語法）。
 - **呼叫 Supabase Edge Function 必須同時帶 `Authorization` 與 `apikey` 兩個 header**：只帶 `Authorization` 會被 Functions gateway 在抵達函式邏輯之前就用 401 擋掉（`apikey` 用 anon key）。
 - **`.returns<T>()` 已淘汰**：`@supabase/postgrest-js` 現行寫法是 `.overrideTypes<T, { merge: false }>()`（`merge: false` = 完全取代推斷型別，等同舊版 `.returns` 的行為）。
-- **PostgREST 的 `.update()` 無法表達「欄位自參照的算術更新」**（例如 `sort_order = sort_order + 1`、`coalesce(trashed_at, now())`），只能寫死常數值。需要這類更新時：批次算術位移用 `security invoker` 的 RPC 函式（見 `shift_days_sort_order`，仍受呼叫者既有 RLS 約束，不用額外開權限）；`coalesce` 語意可拆成兩段式 UPDATE 達成等價效果（不需要為此也開 RPC）。Phase 4 備案切換若也需要類似操作，比照辦理。
+- **PostgREST 的 `.update()` 無法表達「欄位自參照的算術更新」**（例如 `sort_order = sort_order + 1`、`coalesce(trashed_at, now())`），只能寫死常數值。需要這類更新時：批次算術位移用 `security invoker` 的 RPC 函式（見 `shift_days_sort_order`，仍受呼叫者既有 RLS 約束，不用額外開權限）；`coalesce` 語意可拆成兩段式 UPDATE 達成等價效果（不需要為此也開 RPC）。
+- **一般 partial unique index（非 deferrable constraint）在同一句 UPDATE 用 CASE 翻轉多筆值時，Postgres 逐列檢查順序不受控，可能撞到自己**：例如同時把 A 設 false、B 設 true 來「切換誰是唯一的 true」，若 Postgres 先處理到「B 設 true」那列，此刻 A 還是 true，會撞 unique index。解法是拆成兩個獨立 UPDATE 陳述式，依序先把「除了新值以外」全部設成不衝突的值（讓資料短暫經過一個合法的「沒有任何一筆是 true」狀態），再設定新值——見 `switch_primary_stop` RPC（Phase 4 備案切換）。任何「一組裡最多一筆為真」的唯一性翻轉，比照這個兩段式順序辦理。
 
 ## 外部依賴前置條件
 
