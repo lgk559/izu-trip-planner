@@ -2,7 +2,7 @@
 
 原本是純靜態網頁（`izu-kawaguchiko-itinerary.html` + `itinerary-data.json`，手動改 JSON + git commit 更新），正在改造成 4 位朋友共用一組密碼即可線上編輯行程的工具：Vue 3 + Vite + TypeScript 前端、Supabase（Postgres + RLS + Auth + Edge Functions）後端、GitHub Actions 自動部署到 GitHub Pages。
 
-**目前進度**：Phase 0（Spike 驗證）與 Phase 1（正式 schema + 密碼閘 + 唯讀行程展示 + 部署 + 保活）已完成並實測。Phase 2-5（編輯功能、圖片上傳、備案切換、Google Maps/路程估算）尚未開工。詳細時程與踩過的坑見 vault changelog（見下方文件地圖）。
+**目前進度**：Phase 0（Spike 驗證）、Phase 1（正式 schema + 密碼閘 + 唯讀行程展示 + 部署 + 保活）、Phase 2（天數/景點 CRUD + 排序 + 回收站，含 Phase 2b 天數管理重新設計）已完成並通過 build。**`supabase/migrations/0004_phase2b_day_management.sql` 尚待手動貼 Dashboard 執行**，執行前天數管理與行程頭部編輯功能會被 RLS 拒絕。Phase 3-5（圖片上傳、備案切換、Google Maps/路程估算）尚未開工。詳細時程與踩過的坑見 vault changelog（見下方文件地圖）。
 
 ## 文件地圖
 
@@ -54,6 +54,7 @@ izu-kawaguchiko-itinerary.html / itinerary-data.json
 - **`CREATE POLICY` 不支援 `IF NOT EXISTS`**：可重入的 migration 要用 `drop policy if exists "..." on ...;` 接著 `create policy "..." on ...;`，不要寫 `create policy if not exists`（會是無效語法）。
 - **呼叫 Supabase Edge Function 必須同時帶 `Authorization` 與 `apikey` 兩個 header**：只帶 `Authorization` 會被 Functions gateway 在抵達函式邏輯之前就用 401 擋掉（`apikey` 用 anon key）。
 - **`.returns<T>()` 已淘汰**：`@supabase/postgrest-js` 現行寫法是 `.overrideTypes<T, { merge: false }>()`（`merge: false` = 完全取代推斷型別，等同舊版 `.returns` 的行為）。
+- **PostgREST 的 `.update()` 無法表達「欄位自參照的算術更新」**（例如 `sort_order = sort_order + 1`、`coalesce(trashed_at, now())`），只能寫死常數值。需要這類更新時：批次算術位移用 `security invoker` 的 RPC 函式（見 `shift_days_sort_order`，仍受呼叫者既有 RLS 約束，不用額外開權限）；`coalesce` 語意可拆成兩段式 UPDATE 達成等價效果（不需要為此也開 RPC）。Phase 4 備案切換若也需要類似操作，比照辦理。
 
 ## 外部依賴前置條件
 

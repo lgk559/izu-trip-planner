@@ -6,9 +6,16 @@ import type {
   ItineraryImage,
   ItineraryMeals,
   ItineraryStop,
+  TripInfo,
 } from '@/types/itinerary'
 
 // 從 Supabase 撈回來的原始列型別（只列出本階段會用到的欄位）
+interface TripRow {
+  id: string
+  name: string
+  season_label: string
+}
+
 interface DayRow {
   id: string
   date_label: string
@@ -38,7 +45,13 @@ interface ImageRow {
   sort_order: number
 }
 
+// 目前站上只有一趟旅遊（ADR 007），載入時取最早建立的那筆。
+// CRUD 需要知道「這些景點掛在哪趟旅遊」（新增天數要寫 trip_id），
+// 所以把目前 tripId 也暴露出去給 useEditor 使用。
 const days = ref<ItineraryDay[]>([])
+const tripId = ref<string | null>(null)
+// 行程頂層資訊（name/season_label），供頭部標題與季節標籤顯示與編輯。
+const tripInfo = ref<TripInfo | null>(null)
 const isLoading = ref(false)
 const loadError = ref<string | null>(null)
 
@@ -65,22 +78,29 @@ async function loadItinerary(): Promise<void> {
   loadError.value = null
 
   try {
-    // 1. 取第一筆 trip
+    // 1. 取第一筆 trip（一併撈 name/season_label，組成 tripInfo）
     const { data: trip, error: tripErr } = await supabase
       .from('trips')
-      .select('id')
+      .select('id, name, season_label')
       .order('created_at', { ascending: true })
       .limit(1)
-      .maybeSingle()
+      .maybeSingle<TripRow>()
 
     if (tripErr) throw new Error(tripErr.message)
     if (!trip) throw new Error('資料庫裡還沒有任何旅遊資料。')
+    tripId.value = trip.id
+    tripInfo.value = {
+      id: trip.id,
+      name: trip.name,
+      seasonLabel: trip.season_label,
+    }
 
-    // 2. 撈這趟的 days
+    // 2. 撈這趟的 days（排除「特別天」is_holding=true，不讓它出現在畫面上）
     const { data: dayRows, error: dayErr } = await supabase
       .from('days')
       .select('id, date_label, weekday, route, meals, hotel, sort_order')
       .eq('trip_id', trip.id)
+      .eq('is_holding', false)
       .order('sort_order', { ascending: true })
       .overrideTypes<DayRow[], { merge: false }>()
 
@@ -97,7 +117,7 @@ async function loadItinerary(): Promise<void> {
       .from('stops')
       .select('id, day_id, time, name, tag, summary, detail, sort_order')
       .in('day_id', dayIds)
-      .eq('status', 'active') // 只顯示未被軟刪除的（Phase 1 資料都是 active）
+      .eq('status', 'active') // 只顯示未被軟刪除的
       .order('sort_order', { ascending: true })
       .overrideTypes<StopRow[], { merge: false }>()
 
@@ -131,6 +151,8 @@ async function loadItinerary(): Promise<void> {
     for (const stop of stopList) {
       const arr = stopsByDay.get(stop.day_id) ?? []
       arr.push({
+        id: stop.id, // 保留 uuid 供 CRUD 定位
+        sortOrder: stop.sort_order,
         time: stop.time,
         name: stop.name,
         tag: stop.tag,
@@ -142,7 +164,9 @@ async function loadItinerary(): Promise<void> {
     }
 
     days.value = dayList.map((day, index) => ({
-      id: index + 1, // Day 序號用陣列位置（已依 sort_order 排好）
+      id: day.id, // 資料庫 uuid（CRUD 用）
+      sortOrder: day.sort_order,
+      dayNumber: index + 1, // Day 顯示序號用陣列位置（已依 sort_order 排好）
       dateLabel: day.date_label,
       weekday: day.weekday,
       route: day.route,
@@ -160,6 +184,8 @@ async function loadItinerary(): Promise<void> {
 export function useItinerary() {
   return {
     days,
+    tripId,
+    tripInfo,
     isLoading,
     loadError,
     loadItinerary,
