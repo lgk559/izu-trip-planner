@@ -9,7 +9,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'save', payload: { time: string; name: string; tag: string; summary: string; detail: string }): void
+  (e: 'save', payload: { time: string; name: string; tag: string; summary: string; detail: string; address: string }): void
   (e: 'cancel'): void
   // 圖片有變動（上傳/改 caption/刪除成功）→ 通知父層 reload（沿用「畫面=資料庫」慣例）。
   (e: 'images-changed'): void
@@ -27,6 +27,7 @@ const form = reactive({
   tag: props.stop.tag,
   summary: props.stop.summary,
   detail: props.stop.detail,
+  address: props.stop.address,
 })
 
 // 切換到不同景點（同一表單元件被複用）時，同步表單內容。
@@ -38,6 +39,7 @@ watch(
     form.tag = props.stop.tag
     form.summary = props.stop.summary
     form.detail = props.stop.detail
+    form.address = props.stop.address
   },
 )
 
@@ -215,6 +217,14 @@ async function onDeleteImage(imageId: string) {
       名稱
       <input
         v-model="form.name"
+        type="text"
+        class="rounded-md border border-line bg-white px-2 py-1.5 text-sm text-ink"
+      />
+    </label>
+    <label class="flex flex-col gap-1 text-xs text-ink/50">
+      地址（用於 Google Maps 連結與路程估算）
+      <input
+        v-model="form.address"
         type="text"
         class="rounded-md border border-line bg-white px-2 py-1.5 text-sm text-ink"
       />

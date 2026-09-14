@@ -3,6 +3,7 @@ import { ref } from 'vue'
 import type { ItineraryImage, ItineraryStop } from '@/types/itinerary'
 import StopEditForm from '@/components/StopEditForm.vue'
 import AlternativePanel from '@/components/AlternativePanel.vue'
+import { buildGoogleMapsUrl } from '@/lib/googleMaps'
 
 const props = defineProps<{
   stops: ItineraryStop[]
@@ -21,7 +22,7 @@ const emit = defineEmits<{
     e: 'save-stop',
     payload: {
       stopId: string
-      data: { time: string; name: string; tag: string; summary: string; detail: string }
+      data: { time: string; name: string; tag: string; summary: string; detail: string; address: string }
     },
   ): void
   (e: 'trash-stop', stopId: string): void
@@ -36,7 +37,7 @@ const emit = defineEmits<{
       primaryStopId: string
       primaryGroupId: string | null
       sortOrder: number
-      data: { time: string; name: string; tag: string; summary: string; detail: string }
+      data: { time: string; name: string; tag: string; summary: string; detail: string; address: string }
     },
   ): void
   (
@@ -63,7 +64,7 @@ function toggleEdit(stopId: string) {
 
 function onSave(
   stopId: string,
-  data: { time: string; name: string; tag: string; summary: string; detail: string },
+  data: { time: string; name: string; tag: string; summary: string; detail: string; address: string },
 ) {
   emit('save-stop', { stopId, data })
 }
@@ -123,6 +124,17 @@ function handleSaved(stopId: string, data: Parameters<typeof onSave>[1]) {
                 @click="emit('open-lightbox', { images: stop.images, index: imgI })"
               />
             </div>
+
+            <!-- Google Maps 連結：有地址才渲染，不受 isEditor 限制（純檢視功能） -->
+            <a
+              v-if="stop.address"
+              :href="buildGoogleMapsUrl(stop.address)"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="mt-3 inline-flex items-center gap-1 text-xs text-moss hover:underline"
+            >
+              在 Google Maps 開啟
+            </a>
 
             <!-- 編輯控制列：只有 isEditor 才顯示 -->
             <div v-if="isEditor" class="mt-3 flex items-center gap-2 border-t border-line pt-3">

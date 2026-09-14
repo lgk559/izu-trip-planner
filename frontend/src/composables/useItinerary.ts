@@ -34,6 +34,7 @@ interface StopRow {
   tag: string
   summary: string
   detail: string
+  address: string | null // Phase 5：地址（DB 允許 null/空字串）
   sort_order: number
   alternative_group_id: string | null // Phase 4：同組共用群組 id
   is_primary: boolean // Phase 4：true=正式，false=備選
@@ -119,7 +120,7 @@ async function loadItinerary(): Promise<void> {
     const { data: stopRows, error: stopErr } = await supabase
       .from('stops')
       .select(
-        'id, day_id, time, name, tag, summary, detail, sort_order, alternative_group_id, is_primary',
+        'id, day_id, time, name, tag, summary, detail, address, sort_order, alternative_group_id, is_primary',
       )
       .in('day_id', dayIds)
       .eq('status', 'active') // 只顯示未被軟刪除的（含正式與備選，後續組裝時再分流）
@@ -195,6 +196,7 @@ async function loadItinerary(): Promise<void> {
       tag: stop.tag,
       summary: stop.summary,
       detail: stop.detail,
+      address: stop.address ?? '', // Phase 5：null → 空字串
       images: imagesByStop.get(stop.id) ?? [],
       alternativeGroupId: stop.alternative_group_id,
       alternative,

@@ -18,6 +18,7 @@ export interface ItineraryStop {
   tag: string
   summary: string
   detail: string // 內含 HTML，前端以 v-html 渲染（ADR 003 前提：編輯者為信任圈）
+  address: string // Phase 5：景點地址文字，供 Google Maps 連結與路程估算（可為空字串）
   images: ItineraryImage[]
   // Phase 4 備案機制：同組共用的群組 id，null 代表這個景點目前沒有備案關聯。
   alternativeGroupId: string | null

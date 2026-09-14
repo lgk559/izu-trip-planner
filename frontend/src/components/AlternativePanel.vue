@@ -3,6 +3,7 @@ import { reactive, ref, watch } from 'vue'
 import type { ItineraryImage, ItineraryStop } from '@/types/itinerary'
 import { useEditor } from '@/composables/useEditor'
 import StopEditForm from '@/components/StopEditForm.vue'
+import { buildGoogleMapsUrl } from '@/lib/googleMaps'
 
 // 本元件掛在「某個正式景點」底下，負責它的備選區塊：
 //   - 已有備選：摺疊呈現備選內容（time/tag/name/summary/detail/圖片），可編輯/刪除/切換為正式
@@ -25,7 +26,7 @@ const emit = defineEmits<{
     e: 'save-stop',
     payload: {
       stopId: string
-      data: { time: string; name: string; tag: string; summary: string; detail: string }
+      data: { time: string; name: string; tag: string; summary: string; detail: string; address: string }
     },
   ): void
   // 刪除備選：沿用既有 trash-stop，傳備選 id
@@ -41,7 +42,7 @@ const emit = defineEmits<{
       primaryStopId: string
       primaryGroupId: string | null
       sortOrder: number
-      data: { time: string; name: string; tag: string; summary: string; detail: string }
+      data: { time: string; name: string; tag: string; summary: string; detail: string; address: string }
     },
   ): void
   // 連結既有景點為備選
@@ -69,7 +70,7 @@ const tagClass: Record<string, string> = {
 const altExpanded = ref(false) // 預設收合
 const editingAlt = ref(false) // 是否正在編輯備選（掛 StopEditForm）
 
-function onSaveAlt(data: { time: string; name: string; tag: string; summary: string; detail: string }) {
+function onSaveAlt(data: { time: string; name: string; tag: string; summary: string; detail: string; address: string }) {
   if (!props.primaryStop.alternative) return
   emit('save-stop', { stopId: props.primaryStop.alternative.id, data })
   editingAlt.value = false // 樂觀關閉，比照 StopDetails 既有做法
@@ -96,7 +97,7 @@ const addMode = ref<AddMode>(null)
 
 // 新建表單本地狀態（欄位與 StopEditForm 一致，但這是「新增」情境不重用 StopEditForm——
 // StopEditForm 依賴一個既有 stop.id 來管理圖片，新建時還沒有 id，故此處只做純文字表單）
-const createForm = reactive({ time: '', name: '', tag: '', summary: '', detail: '' })
+const createForm = reactive({ time: '', name: '', tag: '', summary: '', detail: '', address: '' })
 const TAG_OPTIONS = ['', '交通', '下車參觀', '入內參觀', '住宿']
 
 function resetCreateForm() {
@@ -105,6 +106,7 @@ function resetCreateForm() {
   createForm.tag = ''
   createForm.summary = ''
   createForm.detail = ''
+  createForm.address = ''
 }
 
 function onSubmitCreate() {
@@ -199,6 +201,17 @@ watch(addMode, (mode) => {
             @click="emit('open-lightbox', { images: primaryStop.alternative!.images, index: imgI })"
           />
         </div>
+
+        <!-- Google Maps 連結：備選有地址才渲染 -->
+        <a
+          v-if="primaryStop.alternative.address"
+          :href="buildGoogleMapsUrl(primaryStop.alternative.address)"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="mt-2 inline-flex items-center gap-1 text-xs text-moss hover:underline"
+        >
+          在 Google Maps 開啟
+        </a>
 
         <!-- 備選操作列 -->
         <div class="mt-3 flex items-center gap-2">
@@ -311,6 +324,14 @@ watch(addMode, (mode) => {
             名稱
             <input
               v-model="createForm.name"
+              type="text"
+              class="rounded-md border border-line bg-white px-2 py-1.5 text-sm text-ink"
+            />
+          </label>
+          <label class="flex flex-col gap-1 text-xs text-ink/50">
+            地址（用於 Google Maps 連結與路程估算）
+            <input
+              v-model="createForm.address"
               type="text"
               class="rounded-md border border-line bg-white px-2 py-1.5 text-sm text-ink"
             />

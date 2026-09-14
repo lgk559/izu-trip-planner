@@ -14,6 +14,29 @@ function fail(err: unknown): EditorResult {
   return { ok: false, message: err instanceof Error ? err.message : String(err) }
 }
 
+// Phase 5：時間軸上相鄰兩景點之間的一段間隔狀態。
+// status：
+//   'ok'              兩端都有地址且快取裡查到路程結果 → 帶 durationText/distanceText
+//   'missing-address' 至少一端沒地址，無法估算
+//   'not-computed'    兩端都有地址但快取裡還沒有結果，需要按「計算預估時間」
+export interface TravelGap {
+  fromStopId: string
+  toStopId: string
+  status: 'ok' | 'missing-address' | 'not-computed'
+  durationText?: string
+  distanceText?: string
+}
+
+// stop_travel_segments 表的快取列型別（讀取用）。
+interface TravelSegmentRow {
+  from_stop_id: string
+  to_stop_id: string
+  travel_mode: string
+  duration_text: string | null
+  distance_text: string | null
+  duration_seconds: number | null
+}
+
 // ---------- 行程頂層資訊（trip）編輯 ----------
 
 // 編輯行程標題與季節標籤（trips.name / trips.season_label）。
@@ -204,14 +227,42 @@ async function deleteDayAt(
 
 // ---------- 景點（stop）CRUD ----------
 
-// 編輯景點文字欄位。
+// 編輯景點文字欄位。Phase 5：address 一起存；若地址被改動，清掉所有牽涉到
+// 這個景點的路程快取（不分方向、不分 travel_mode），其餘配對不受影響。
 async function updateStop(
   stopId: string,
-  payload: { time: string; name: string; tag: string; summary: string; detail: string },
+  payload: {
+    time: string
+    name: string
+    tag: string
+    summary: string
+    detail: string
+    address: string
+  },
 ): Promise<EditorResult> {
   try {
+    // 先讀舊地址，供 update 成功後比對是否需要清快取。
+    const { data: before, error: beforeErr } = await supabase
+      .from('stops')
+      .select('address')
+      .eq('id', stopId)
+      .maybeSingle<{ address: string | null }>()
+    if (beforeErr) throw new Error(beforeErr.message)
+
     const { error } = await supabase.from('stops').update(payload).eq('id', stopId)
     if (error) throw new Error(error.message)
+
+    // 地址有變動 → 清掉所有「這個景點當起點或終點」的快取列。
+    // 只影響相鄰配對裡牽涉到本景點的那幾組，其他配對的快取原封不動。
+    const oldAddress = before?.address ?? ''
+    if (oldAddress !== payload.address) {
+      const { error: delErr } = await supabase
+        .from('stop_travel_segments')
+        .delete()
+        .or(`from_stop_id.eq.${stopId},to_stop_id.eq.${stopId}`)
+      if (delErr) throw new Error(delErr.message)
+    }
+
     return { ok: true }
   } catch (err) {
     return fail(err)
@@ -537,6 +588,149 @@ async function swapStopOrder(
   }
 }
 
+// ---------- 路程時間估算（Phase 5）----------
+
+const TRAVEL_FUNCTION_NAME = 'compute-route-matrix'
+
+// 依有序景點清單，兩兩相鄰組成 N-1 組間隔，讀取快取後回傳每組狀態。
+// 純讀取，永遠不呼叫 Edge Function。
+//   - 任一端地址為空 → 'missing-address'（不查快取）
+//   - 兩端都有地址：查快取，查到 → 'ok'（帶文字），查不到 → 'not-computed'
+async function loadCachedTravelTimes(
+  orderedStops: { id: string; address: string }[],
+  travelMode: string,
+): Promise<TravelGap[]> {
+  const gaps: TravelGap[] = []
+  const validFromIds: string[] = []
+
+  // 先把每組間隔的基本狀態排好；有效配對記下 fromId 供批次查詢。
+  for (let i = 0; i < orderedStops.length - 1; i++) {
+    const from = orderedStops[i]
+    const to = orderedStops[i + 1]
+    const bothHaveAddress = from.address.trim() !== '' && to.address.trim() !== ''
+    gaps.push({
+      fromStopId: from.id,
+      toStopId: to.id,
+      status: bothHaveAddress ? 'not-computed' : 'missing-address',
+    })
+    if (bothHaveAddress) validFromIds.push(from.id)
+  }
+
+  if (validFromIds.length === 0) return gaps
+
+  // 批次一次查詢：用 from_stop_id 縮小範圍（撈回可能含不相鄰的列，JS 端再精準比對）。
+  const { data: rows, error } = await supabase
+    .from('stop_travel_segments')
+    .select('from_stop_id, to_stop_id, travel_mode, duration_text, distance_text, duration_seconds')
+    .in('from_stop_id', validFromIds)
+    .eq('travel_mode', travelMode)
+    .overrideTypes<TravelSegmentRow[], { merge: false }>()
+  if (error) throw new Error(error.message)
+
+  // 用「from|to」當 key 建 lookup，JS 端精準比對出對得上的那一列。
+  const cacheByPair = new Map<string, TravelSegmentRow>()
+  for (const row of rows ?? []) {
+    cacheByPair.set(`${row.from_stop_id}|${row.to_stop_id}`, row)
+  }
+
+  for (const gap of gaps) {
+    if (gap.status !== 'not-computed') continue
+    const hit = cacheByPair.get(`${gap.fromStopId}|${gap.toStopId}`)
+    if (hit) {
+      gap.status = 'ok'
+      gap.durationText = hit.duration_text ?? undefined
+      gap.distanceText = hit.distance_text ?? undefined
+    }
+  }
+
+  return gaps
+}
+
+// 計算某天的路程時間：先看快取，全部有就不打 API；否則呼叫 Edge Function
+// 拿全部有效配對的結果，upsert 寫回快取。
+async function computeDayTravelTimes(
+  orderedStops: { id: string; address: string }[],
+  travelMode: string,
+): Promise<EditorResult> {
+  try {
+    const gaps = await loadCachedTravelTimes(orderedStops, travelMode)
+    const validGaps = gaps.filter((g) => g.status !== 'missing-address')
+
+    if (validGaps.length === 0) {
+      return { ok: true, note: '目前沒有可估算的路段（相鄰景點需兩端都有地址）。' }
+    }
+
+    // 所有有效配對都已是 ok（全都有快取）→ 不打 API。
+    if (validGaps.every((g) => g.status === 'ok')) {
+      return { ok: true, note: '目前的預估時間都是最新的，沒有打新的查詢。' }
+    }
+
+    // 用 stop id → address 對照，把全部有效配對組成 pairs（不只缺的那幾組）。
+    const addressById = new Map(orderedStops.map((s) => [s.id, s.address]))
+    const pairs = validGaps.map((g) => ({
+      fromStopId: g.fromStopId,
+      fromAddress: addressById.get(g.fromStopId) ?? '',
+      toStopId: g.toStopId,
+      toAddress: addressById.get(g.toStopId) ?? '',
+    }))
+
+    // 呼叫 Edge Function（比照 useAuth.verifyPassword：帶 Authorization + apikey）。
+    const { data: sessionData } = await supabase.auth.getSession()
+    const accessToken = sessionData.session?.access_token
+    if (!accessToken) {
+      return { ok: false, message: '尚未建立連線，請重新整理頁面再試。' }
+    }
+
+    const functionUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/${TRAVEL_FUNCTION_NAME}`
+    const res = await fetch(functionUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`,
+        apikey: import.meta.env.VITE_SUPABASE_ANON_KEY,
+      },
+      body: JSON.stringify({ travelMode, pairs }),
+    })
+
+    const body = (await res.json().catch(() => ({}))) as {
+      success?: boolean
+      error?: string
+      segments?: {
+        fromStopId: string
+        toStopId: string
+        durationSeconds: number
+        durationText: string
+        distanceText: string
+      }[]
+    }
+
+    if (!res.ok || !body.success) {
+      throw new Error(body.error ?? '路程估算失敗，請再試一次。')
+    }
+
+    const segments = body.segments ?? []
+    if (segments.length > 0) {
+      const { error: upsertErr } = await supabase.from('stop_travel_segments').upsert(
+        segments.map((s) => ({
+          from_stop_id: s.fromStopId,
+          to_stop_id: s.toStopId,
+          travel_mode: travelMode,
+          duration_seconds: s.durationSeconds,
+          duration_text: s.durationText,
+          distance_text: s.distanceText,
+          computed_at: new Date().toISOString(),
+        })),
+        { onConflict: 'from_stop_id,to_stop_id,travel_mode' },
+      )
+      if (upsertErr) throw new Error(upsertErr.message)
+    }
+
+    return { ok: true }
+  } catch (err) {
+    return fail(err)
+  }
+}
+
 // ---------- 備案（alternative）機制（Phase 4）----------
 
 // 決定一個備案群組 id：正式景點若尚未有群組（primaryGroupId=null），產生新 uuid 並
@@ -578,12 +772,20 @@ async function groupHasAlternative(groupId: string | null): Promise<boolean> {
 // sort_order 直接沿用正式景點自己的 sort_order（呼叫端傳入），不查 max+1：
 //   備選不進主列表排序計算，用相同值即可，且這樣不會拉高 getMaxStopSortOrder
 //   對「該天下一個正式景點該用的 sort_order」的計算結果。
+// Phase 5：備選與正式景點對稱，data 帶 address 一起 insert（供 Google Maps 連結／路程估算）。
 async function createAlternative(payload: {
   dayId: string
   primaryStopId: string
   primaryGroupId: string | null
   sortOrder: number
-  data: { time: string; name: string; tag: string; summary: string; detail: string }
+  data: {
+    time: string
+    name: string
+    tag: string
+    summary: string
+    detail: string
+    address: string
+  }
 }): Promise<EditorResult> {
   try {
     // 後端滿員檢查（防競態）：已有現役備選就拒絕，不寫入。
@@ -599,6 +801,7 @@ async function createAlternative(payload: {
       tag: payload.data.tag,
       summary: payload.data.summary,
       detail: payload.data.detail,
+      address: payload.data.address,
       sort_order: payload.sortOrder,
       status: 'active',
       alternative_group_id: groupId,
@@ -824,6 +1027,8 @@ export function useEditor() {
     restoreStop,
     purgeStop,
     swapStopOrder,
+    loadCachedTravelTimes,
+    computeDayTravelTimes,
     createAlternative,
     linkExistingAsAlternative,
     switchPrimary,

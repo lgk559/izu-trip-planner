@@ -2,7 +2,7 @@
 
 原本是純靜態網頁（`izu-kawaguchiko-itinerary.html` + `itinerary-data.json`，手動改 JSON + git commit 更新），正在改造成 4 位朋友共用一組密碼即可線上編輯行程的工具：Vue 3 + Vite + TypeScript 前端、Supabase（Postgres + RLS + Auth + Edge Functions）後端、GitHub Actions 自動部署到 GitHub Pages。
 
-**目前進度**：Phase 0（Spike 驗證）、Phase 1（正式 schema + 密碼閘 + 唯讀行程展示 + 部署 + 保活）、Phase 2（天數/景點 CRUD + 排序 + 回收站，含 Phase 2b 天數管理重新設計）、Phase 3（圖片上傳）、Phase 4（備案切換機制）已完成並通過 build。**`supabase/migrations/0004_phase2b_day_management.sql`、`0005_phase3_images.sql`、`0006_phase4_alternatives.sql` 尚待手動貼 Dashboard 執行**，執行前天數管理、行程頭部編輯、圖片上傳/編輯/刪除、備案切換功能會被 RLS 拒絕。Phase 5（Google Maps/路程估算）尚未開工。詳細時程與踩過的坑見 vault changelog（見下方文件地圖）。
+**目前進度**：Phase 0（Spike 驗證）～Phase 5（Google Maps 連結 + 路程時間估算）全數完成並通過 build，規劃中的 Phase 已無未開工項目。**`supabase/migrations/0004_phase2b_day_management.sql`、`0005_phase3_images.sql`、`0006_phase4_alternatives.sql`、`0007_phase5_route_time.sql` 尚待手動貼 Dashboard 執行**，執行前天數管理、行程頭部編輯、圖片上傳/編輯/刪除、備案切換、路程時間估算功能會被 RLS 拒絕；另外 `compute-route-matrix` Edge Function 也**尚待部署**（`supabase functions deploy compute-route-matrix`），部署前「計算預估時間」按鈕會失敗。詳細時程與踩過的坑見 vault changelog（見下方文件地圖）。
 
 ## 文件地圖
 
@@ -12,7 +12,7 @@
 | 了解密碼驗證/RLS 授權機制細節與取捨 | architecture.md「查閱區」+ `.../adr/006-密碼保護實作機制修正.md` |
 | 了解資料庫 schema、備案、軟刪除設計 | `.../adr/003-資料庫schema與備案機制.md`、`.../adr/007-多旅遊支援.md` |
 | 了解前端框架選型、部署與保活機制 | `.../adr/005-前端框架與部署.md` |
-| 了解 Google Maps/路程估算選型（Phase 5 未實作） | `.../adr/004-路程時間估算與金鑰保護.md` |
+| 了解 Google Maps/路程估算選型與快取設計 | `.../adr/004-路程時間估算與金鑰保護.md`、architecture.md「查閱區」路程時間估算 callout |
 | 想知道各 Phase 完成了什麼、遇到什麼 bug、怎麼修的 | `learning-vault/projects/izu-kawaguchiko-itinerary/changelog.md` |
 | 想知道下一步該做 Phase 幾、驗收清單有哪些 | `C:\Users\Tito\.claude\plans\prancy-baking-trinket.md` |
 
@@ -31,7 +31,7 @@ npm run preview  # 預覽 build 產物
 
 Supabase：
 - Migrations（`supabase/migrations/*.sql`）目前是**手動流程**：整份貼進 Supabase Dashboard → SQL Editor → Run，不是用 CLI `supabase db push`。
-- Edge Function 部署：`supabase functions deploy verify-password`（需先 `supabase login` + `supabase link` 綁定專案）。
+- Edge Function 部署：`supabase functions deploy <function-name>`（`verify-password`／`compute-route-matrix`，需先 `supabase login` + `supabase link` 綁定專案）。
 - 機密（`service_role` key、密碼雜湊/鹽）用 `supabase secrets set` 設定，只存在 Edge Function 環境變數。
 
 ## 架構速覽
@@ -39,7 +39,7 @@ Supabase：
 ```
 frontend/                 Vue3+Vite+TS SPA，密碼閘+行程展示+完整編輯（天數/景點 CRUD、排序、回收站、圖片、備案切換）
 supabase/migrations/       SQL schema，手動貼 Dashboard SQL Editor 執行
-supabase/functions/        Deno Edge Functions（verify-password：密碼驗證+登記編輯權限）
+supabase/functions/        Deno Edge Functions（verify-password：密碼驗證+登記編輯權限；compute-route-matrix：代理 Google Routes API）
 .github/workflows/         deploy.yml：push main 自動 build+部署到 GitHub Pages
 izu-kawaguchiko-itinerary.html / itinerary-data.json
                             舊版純靜態頁與資料來源，已被 Vue 版取代上線，保留作歷史參考
@@ -56,6 +56,7 @@ izu-kawaguchiko-itinerary.html / itinerary-data.json
 - **`.returns<T>()` 已淘汰**：`@supabase/postgrest-js` 現行寫法是 `.overrideTypes<T, { merge: false }>()`（`merge: false` = 完全取代推斷型別，等同舊版 `.returns` 的行為）。
 - **PostgREST 的 `.update()` 無法表達「欄位自參照的算術更新」**（例如 `sort_order = sort_order + 1`、`coalesce(trashed_at, now())`），只能寫死常數值。需要這類更新時：批次算術位移用 `security invoker` 的 RPC 函式（見 `shift_days_sort_order`，仍受呼叫者既有 RLS 約束，不用額外開權限）；`coalesce` 語意可拆成兩段式 UPDATE 達成等價效果（不需要為此也開 RPC）。
 - **一般 partial unique index（非 deferrable constraint）在同一句 UPDATE 用 CASE 翻轉多筆值時，Postgres 逐列檢查順序不受控，可能撞到自己**：例如同時把 A 設 false、B 設 true 來「切換誰是唯一的 true」，若 Postgres 先處理到「B 設 true」那列，此刻 A 還是 true，會撞 unique index。解法是拆成兩個獨立 UPDATE 陳述式，依序先把「除了新值以外」全部設成不衝突的值（讓資料短暫經過一個合法的「沒有任何一筆是 true」狀態），再設定新值——見 `switch_primary_stop` RPC（Phase 4 備案切換）。任何「一組裡最多一筆為真」的唯一性翻轉，比照這個兩段式順序辦理。
+- **Edge Function 若代理呼叫「按用量計費」的外部 API（如 Google Routes API），只驗證「JWT 身分有效」不夠，必須額外驗證「這個身分是不是登記過的編輯者」**：這個專案的匿名登入任何人打開網頁就會自動取得，只檢查 `auth.getUser(jwt)` 成功擋不住任何路人——他們一樣有合法但未授權的匿名 session，會讓任何人都能免費消耗你的付費額度。做法是額外用該使用者的 JWT context 呼叫 `is_trip_editor()` RPC，false 就 403 拒絕、不往下打外部 API，見 `compute-route-matrix`（Phase 5）。日後新增任何呼叫付費 API 的 Edge Function 都要比照辦理。
 
 ## 外部依賴前置條件
 
@@ -65,4 +66,4 @@ izu-kawaguchiko-itinerary.html / itinerary-data.json
 
 ## 資料儲存位置
 
-正式行程資料存在 Supabase Postgres（`trips`/`days`/`stops`/`images`/`trip_editors` 五表）。`itinerary-data.json` 是舊資料來源，已一次性匯入（`supabase/migrations/0002_seed_izu_trip.sql`），不再是 source of truth，之後不需要再手動編輯它來更新行程內容。
+正式行程資料存在 Supabase Postgres（`trips`/`days`/`stops`/`images`/`trip_editors`/`stop_travel_segments` 六表）。`itinerary-data.json` 是舊資料來源，已一次性匯入（`supabase/migrations/0002_seed_izu_trip.sql`），不再是 source of truth，之後不需要再手動編輯它來更新行程內容。
