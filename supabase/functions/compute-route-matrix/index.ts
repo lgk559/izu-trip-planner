@@ -238,6 +238,18 @@ Deno.serve(async (req: Request) => {
       });
     }
 
+    // 診斷用：只要有配對沒有轉成有效 segment（不論是查無路線、condition 不是
+    // ROUTE_EXISTS，還是欄位缺漏），就把 Google 的原始 elements 內容完整記到
+    // server log。目前這段邏輯完全靜默（不視為錯誤），排查時只能靠這裡的線索
+    // 判斷 Google 到底回了什麼。
+    if (segments.length < pairs.length) {
+      console.error(
+        `路程估算部分/全部配對沒有結果（${segments.length}/${pairs.length} 組成功）。` +
+          "Google 原始回應：",
+        JSON.stringify(elements),
+      );
+    }
+
     return json({ success: true, segments }, 200);
   } catch (err) {
     return json({ error: `Server 錯誤：${String(err)}` }, 500);
