@@ -1,44 +1,20 @@
 <script setup lang="ts">
-import { computed } from 'vue'
 import type { ItineraryStop } from '@/types/itinerary'
-import type { TravelGap } from '@/composables/useEditor'
+import { buildGoogleMapsDirectionsUrl } from '@/lib/googleMaps'
 
-const props = defineProps<{
+defineProps<{
   stops: ItineraryStop[]
   activeStopIndex: number | null
-  // Phase 5：相鄰景點間隔的路程狀態（長度 = stops.length - 1）。
-  // null 代表尚未載入 → 所有間隔都顯示「尚未計算」。
-  travelGaps: TravelGap[] | null
-  isEditor: boolean
-  computingTravelTimes: boolean
 }>()
 
 const emit = defineEmits<{
   (e: 'focus', index: number): void
-  (e: 'compute-travel-times'): void
 }>()
-
-// 把「時間軸上每個位置對應的路程間隔」預先算成具名陣列，template 只讀單一
-// 區域變數，避免重複索引存取導致 vue-tsc 跨行窄化失效。
-const gapsByIndex = computed<(TravelGap | null)[]>(() =>
-  props.stops.map((_, i) => props.travelGaps?.[i] ?? null),
-)
 </script>
 
 <template>
   <section class="mb-8">
-    <div class="mb-3 flex items-center justify-between gap-3">
-      <h2 class="font-serif text-sm text-ink/50">今日時間軸</h2>
-      <button
-        v-if="isEditor"
-        type="button"
-        class="rounded-md border border-line px-2.5 py-1 text-xs text-moss hover:bg-line/30 disabled:opacity-50"
-        :disabled="computingTravelTimes"
-        @click="emit('compute-travel-times')"
-      >
-        {{ computingTravelTimes ? '計算中…' : '計算預估時間' }}
-      </button>
-    </div>
+    <h2 class="font-serif text-sm text-ink/50 mb-3">今日時間軸</h2>
     <div class="flex flex-col">
       <div
         v-for="(stop, i) in stops"
@@ -57,22 +33,19 @@ const gapsByIndex = computed<(TravelGap | null)[]>(() =>
               <span class="tl-name text-sm font-medium">{{ stop.name }}</span>
             </div>
             <p class="text-xs text-ink/50 mt-0.5">{{ stop.summary }}</p>
-            <!-- Phase 5：到下一個景點的路程預估（小字淡色，不搶時間軸重點）。
-                 用 gapsByIndex 一次取值，避免 template 內重複索引造成窄化失效。 -->
-            <template v-if="i < stops.length - 1">
-              <p class="mt-1 text-[11px] text-ink/35">
-                <template v-if="gapsByIndex[i] && gapsByIndex[i]!.status === 'ok'">
-                  約 {{ gapsByIndex[i]!.durationText
-                  }}<template v-if="gapsByIndex[i]!.distanceText"
-                    >・{{ gapsByIndex[i]!.distanceText }}</template
-                  >
-                </template>
-                <template v-else-if="gapsByIndex[i] && gapsByIndex[i]!.status === 'missing-address'">
-                  缺地址，無法估算
-                </template>
-                <template v-else>尚未計算</template>
-              </p>
-            </template>
+            <!-- 到下一個景點的大眾運輸路線導連：兩端都有地址才顯示，點開新分頁到
+                 Google Maps 路線規劃頁（消費者版網頁計算，日本 transit 資料準確）。
+                 純檢視功能，不受 isEditor 限制。@click.stop 避免順帶觸發 focus。 -->
+            <a
+              v-if="i < stops.length - 1 && stop.address && stops[i + 1].address"
+              :href="buildGoogleMapsDirectionsUrl(stop.address, stops[i + 1].address)"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="mt-1 inline-flex items-center gap-1 text-[11px] text-moss hover:underline"
+              @click.stop
+            >
+              查看到下一站的路線
+            </a>
           </div>
         </div>
       </div>

@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { useAuth } from '@/composables/useAuth'
 import { useItinerary } from '@/composables/useItinerary'
 import { useEditor } from '@/composables/useEditor'
-import type { TrashedStop, TravelGap } from '@/composables/useEditor'
+import type { TrashedStop } from '@/composables/useEditor'
 import type { ItineraryHotel, ItineraryImage, ItineraryMeals } from '@/types/itinerary'
 import DayTabs from '@/components/DayTabs.vue'
 import Timeline from '@/components/Timeline.vue'
@@ -30,8 +30,6 @@ const {
   switchPrimary,
   detachAlternative,
   loadTrashedStops,
-  loadCachedTravelTimes,
-  computeDayTravelTimes,
 } = useEditor()
 
 // ---- 檢視狀態 ----
@@ -105,36 +103,12 @@ const lightboxImages = ref<ItineraryImage[]>([])
 const lightboxIndex = ref(0)
 const lightboxVisible = ref(false)
 
-// ---- Phase 5 路程估算狀態 ----
-const travelGaps = ref<TravelGap[]>([])
-const computingTravelTimes = ref(false)
-
-async function switchDay(index: number) {
+function switchDay(index: number) {
   currentDay.value = index
   activeStopIndex.value = null
   // 切到新的一天時，預設把所有景點展開（沿用原 HTML 行為）
   const stops = days.value[index]?.stops ?? []
   openStops.value = new Set(stops.map((_, i) => i))
-  await refreshTravelGaps()
-}
-
-// Phase 5：依當天景點（含地址）讀取路程快取，更新時間軸的間隔顯示。
-// 純快取讀取，失敗不打擾使用者（頂多顯示「尚未計算」），僅 console.warn 方便除錯。
-async function refreshTravelGaps() {
-  const day = currentDayData.value
-  if (!day) {
-    travelGaps.value = []
-    return
-  }
-  try {
-    travelGaps.value = await loadCachedTravelTimes(
-      day.stops.map((s) => ({ id: s.id, address: s.address })),
-      'TRANSIT',
-    )
-  } catch (err) {
-    console.warn('讀取路程快取失敗：', err)
-    travelGaps.value = []
-  }
 }
 
 function toggleAccordion(index: number) {
@@ -175,7 +149,7 @@ function stepLightbox(delta: number) {
 async function reload(keepDayIndex = currentDay.value) {
   await loadItinerary()
   const idx = keepDayIndex < days.value.length ? keepDayIndex : 0
-  if (days.value.length > 0) await switchDay(idx)
+  if (days.value.length > 0) switchDay(idx)
   else {
     currentDay.value = 0
     openStops.value = new Set()
@@ -288,24 +262,6 @@ async function onDetachAlternative(payload: { stopId: string; dayId: string }) {
   if (reportIfFail(result)) await reload()
 }
 
-// ---- Phase 5 計算預估時間 ----
-async function onComputeTravelTimes() {
-  const day = currentDayData.value
-  if (!day) return
-  computingTravelTimes.value = true
-  const result = await computeDayTravelTimes(
-    day.stops.map((s) => ({ id: s.id, address: s.address })),
-    'TRANSIT',
-  )
-  if (reportIfFail(result)) {
-    // 成功且有附帶說明（例如「都是最新的，沒打新查詢」）→ 用 editorNote 提示
-    editorNote.value = result.note ?? null
-  }
-  // 無論成功與否都刷新一次，讓畫面反映最新快取狀態。
-  await refreshTravelGaps()
-  computingTravelTimes.value = false
-}
-
 // ---- 回收站 ----
 async function refreshTrash() {
   if (!tripId.value) return
@@ -345,7 +301,7 @@ watch(
   async (editor) => {
     if (editor && days.value.length === 0) {
       await loadItinerary()
-      if (days.value.length > 0) await switchDay(0)
+      if (days.value.length > 0) switchDay(0)
       await refreshTrash()
     }
   },
@@ -483,11 +439,7 @@ onMounted(() => {
       <Timeline
         :stops="currentDayData.stops"
         :active-stop-index="activeStopIndex"
-        :travel-gaps="travelGaps"
-        :is-editor="isEditor"
-        :computing-travel-times="computingTravelTimes"
         @focus="focusFromTimeline"
-        @compute-travel-times="onComputeTravelTimes"
       />
       <TodayInfo
         :day="currentDayData"
